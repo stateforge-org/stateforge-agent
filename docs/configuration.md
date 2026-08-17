@@ -1,0 +1,272 @@
+# Agent configuration file
+
+The StateForge Agent uses TOML configuration. The packaged primary file is:
+
+```text
+/etc/stateforge-agent/config.toml
+```
+
+The configuration is strict: every documented top-level section and field is
+required in the final merged configuration, unknown fields are rejected, and
+values are not silently coerced to another type.
+
+!!! important
+
+    The packaged file intentionally contains an empty `control_plane.url`.
+    Configure that value before starting the Agent. An empty URL does not pass
+    validation.
+
+## Complete example
+
+```toml
+schema_version = 1
+
+[agent]
+data_directory = "/var/lib/stateforge-agent"
+runtime_directory = "/run/stateforge-agent"
+staging_directory = "/var/lib/stateforge-agent/staging"
+
+[control_plane]
+url = "https://control.stateforge.example"
+ca_certificate = "/etc/pki/tls/certs/ca-bundle.crt"
+connect_timeout_seconds = 10
+request_timeout_seconds = 30
+
+[providers]
+discovery_directory = "/run/stateforge-agent/providers"
+health_interval_seconds = 15
+reconnect_initial_delay_seconds = 1
+reconnect_max_delay_seconds = 30
+
+[journal]
+backend = "sqlite"
+path = "/var/lib/stateforge-agent/journal/agent.db"
+
+[logging]
+level = "info"
+format = "text"
+destination = "stderr"
+```
+
+## Top-level fields
+
+| Field | Type | Required | Accepted value | Purpose |
+| --- | --- | --- | --- | --- |
+| `schema_version` | Integer | Yes | `1` | Selects the configuration schema understood by this Agent release. |
+| `agent` | Table | Yes | See below | Defines Agent-owned filesystem locations. |
+| `control_plane` | Table | Yes | See below | Defines the Control Plane connection. |
+| `providers` | Table | Yes | See below | Defines local Provider discovery and connection behavior. |
+| `journal` | Table | Yes | See below | Defines durable local journal storage. |
+| `logging` | Table | Yes | See below | Defines process logging. |
+
+## `[agent]`
+
+All paths in this section must be absolute.
+
+| Field | Type | Packaged value | Purpose |
+| --- | --- | --- | --- |
+| `data_directory` | String path | `/var/lib/stateforge-agent` | Persistent Agent-owned state. |
+| `runtime_directory` | String path | `/run/stateforge-agent` | Volatile runtime state created for the running Agent. |
+| `staging_directory` | String path | `/var/lib/stateforge-agent/staging` | SDK-managed workspace used to stage operation data. |
+
+The configuration loader validates that these are absolute paths. It does not
+create them or verify their ownership. Packaging and the runtime are
+responsible for provisioning and using them safely.
+
+## `[control_plane]`
+
+| Field | Type | Packaged value | Validation and purpose |
+| --- | --- | --- | --- |
+| `url` | String | Empty; must be configured | Absolute HTTPS base URL for the StateForge Control Plane. It must contain a hostname and must not contain embedded credentials, a query string, or a fragment. |
+| `ca_certificate` | String path | `/etc/pki/tls/certs/ca-bundle.crt` | Absolute path to the CA certificate bundle used to authenticate the remote endpoint. |
+| `connect_timeout_seconds` | Integer | `10` | Connection establishment timeout. Must be greater than zero. |
+| `request_timeout_seconds` | Integer | `30` | Control Plane request timeout. Must be greater than zero. |
+
+A path component in `url` is allowed. Credentials must never be embedded in
+the URL:
+
+```toml
+# Valid
+url = "https://control.example.com/stateforge"
+
+# Invalid: HTTP is not accepted
+url = "http://control.example.com"
+
+# Invalid: embedded credentials are not accepted
+url = "https://user:password@control.example.com"
+
+# Invalid: query strings and fragments are not accepted
+url = "https://control.example.com?token=value"
+```
+
+The loader validates the CA bundle path syntactically as an absolute path. It
+does not check whether the referenced file exists during `check-config`.
+
+## `[providers]`
+
+| Field | Type | Packaged value | Validation and purpose |
+| --- | --- | --- | --- |
+| `discovery_directory` | String path | `/run/stateforge-agent/providers` | Absolute path monitored for SFP endpoint descriptors. |
+| `health_interval_seconds` | Integer | `15` | Provider health-monitoring interval. Must be greater than zero. |
+| `reconnect_initial_delay_seconds` | Integer | `1` | Initial bounded-backoff delay after a failed Provider connection. Must be greater than zero. |
+| `reconnect_max_delay_seconds` | Integer | `30` | Maximum reconnect delay. Must be greater than zero and greater than or equal to the initial delay. |
+
+The RPM creates the default discovery directory through `systemd-tmpfiles`.
+Provider processes publish their endpoint descriptors and Unix domain sockets
+there; the Agent does not use this directory for Provider-specific data.
+
+## `[journal]`
+
+| Field | Type | Packaged value | Validation and purpose |
+| --- | --- | --- | --- |
+| `backend` | String | `sqlite` | Durable journal backend. `sqlite` is the only value supported by schema version 1. |
+| `path` | String path | `/var/lib/stateforge-agent/journal/agent.db` | Absolute path of the Agent journal database. |
+
+The selected Backup Engine does not belong in this section. Backup Engines are
+operation tools selected through Control Plane policy rather than global Agent
+configuration.
+
+## `[logging]`
+
+| Field | Type | Packaged value | Accepted values and purpose |
+| --- | --- | --- | --- |
+| `level` | String | `info` | `debug`, `info`, `warning`, `error`, or `critical`. |
+| `format` | String | `text` | `text` or `json`. |
+| `destination` | String | `stderr` | `stderr` is the only destination supported by schema version 1. |
+
+When the Agent runs under systemd, output written to standard error is captured
+by the service manager and is available through `journalctl`.
+
+## Drop-in configuration
+
+By default, the Agent loads partial overrides from:
+
+```text
+/etc/stateforge-agent/conf.d/*.toml
+```
+
+Sources are applied in this order:
+
+1. The primary `config.toml` file.
+2. Files ending in `.toml` from `conf.d`, sorted lexicographically by filename.
+
+Tables are merged recursively. When multiple sources define the same final
+field, the value from the later source wins. Drop-ins may contain only the
+tables and fields they override; the final merged result must still contain
+the complete schema.
+
+For example:
+
+```text
+/etc/stateforge-agent/config.toml
+/etc/stateforge-agent/conf.d/10-logging.toml
+/etc/stateforge-agent/conf.d/90-local.toml
+```
+
+If both drop-ins define `logging.level`, `90-local.toml` wins:
+
+```toml
+# /etc/stateforge-agent/conf.d/10-logging.toml
+[logging]
+level = "warning"
+```
+
+```toml
+# /etc/stateforge-agent/conf.d/90-local.toml
+[logging]
+level = "debug"
+```
+
+Only the filename controls precedence. A file's creation time, modification
+time, and package origin have no effect.
+
+!!! warning
+
+    Do not put credentials or other secrets directly in the configuration.
+    Use protected credential files or the credential mechanism defined for the
+    relevant subsystem.
+
+## File ownership and permissions
+
+The RPM installs the primary file with this ownership and mode:
+
+```text
+root:stateforge-agent 0640
+```
+
+It installs `/etc/stateforge-agent` and `conf.d` as
+`root:stateforge-agent 0750`. Administrators should give drop-ins the same
+`root:stateforge-agent 0640` ownership and mode unless a stricter deployment
+policy applies.
+
+The primary file is packaged with RPM `%config(noreplace)` semantics, so a
+package upgrade does not silently replace an administrator-modified file.
+
+## Validation
+
+Validate the effective configuration before starting or restarting the Agent:
+
+```console
+stateforge-agent check-config
+```
+
+A successful result includes:
+
+```text
+Configuration is valid.
+Fingerprint: sha256:...
+Sources:
+- /etc/stateforge-agent/config.toml
+- /etc/stateforge-agent/conf.d/90-local.toml
+```
+
+The fingerprint identifies the validated, effective configuration after all
+drop-ins have been merged. It is not the checksum of any individual source
+file. Two different source layouts that produce the same effective values
+produce the same fingerprint.
+
+Validation errors identify both the dotted field name and the source that
+defined the invalid value. `check-config` returns exit status `0` when valid
+and `2` when loading or validation fails.
+
+You can validate another primary file:
+
+```console
+stateforge-agent check-config --config /path/to/config.toml
+```
+
+You can also override the drop-in directory:
+
+```console
+stateforge-agent check-config \
+    --config /path/to/config.toml \
+    --drop-in-directory /path/to/conf.d
+```
+
+If `--drop-in-directory` is omitted, the Agent always looks for `conf.d`
+beside the selected primary file.
+
+## Reload behavior
+
+The current Agent implementation loads configuration once during process
+startup. It does not currently reload configuration through SIGHUP, a control
+socket, or filesystem monitoring. Apply a validated change by restarting the
+service:
+
+```console
+sudo stateforge-agent check-config
+sudo systemctl restart stateforge-agent
+```
+
+Runtime reload will require a separately implemented and tested command and a
+clear field-by-field reloadability contract. Until that exists, documentation
+must not imply that `systemctl reload stateforge-agent` applies changes.
+
+## Schema-version behavior
+
+Schema version `1` is the only supported configuration schema. The Agent
+rejects a missing, non-integer, older, or newer schema version instead of
+guessing compatibility.
+
+When a later schema is introduced, migrations and compatibility behavior must
+be documented before that version is accepted by the loader.
