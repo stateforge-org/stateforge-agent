@@ -66,6 +66,18 @@ class ProviderConnectionStatus:
     candidate_endpoint_generation: int | None
 
 
+@dataclass(slots=True)
+class _ProviderRuntimeState:
+    """Keep all mutable connection state for one Provider together."""
+
+    desired_descriptor: ProviderEndpointDescriptor | None = None
+    active_session: ProviderSession | None = None
+    connection_status: ProviderConnectionStatus | None = None
+    attempt_token: object | None = None
+    channel_watcher: asyncio.Task[None] | None = None
+    retry_task: asyncio.Task[None] | None = None
+
+
 class ProviderSessionManager:
     """Promote validated channels and replace them without a blind gap."""
 
@@ -114,25 +126,22 @@ class ProviderSessionManager:
         self._reconnect_initial_delay_seconds = reconnect_initial_delay_seconds
         self._reconnect_max_delay_seconds = reconnect_max_delay_seconds
         self._descriptor_loader = descriptor_loader
-        self._sessions: dict[UUID, ProviderSession] = {}
-        self._statuses: dict[UUID, ProviderConnectionStatus] = {}
-        self._attempts: dict[UUID, object] = {}
-        self._watchers: dict[UUID, asyncio.Task[None]] = {}
-        self._desired_descriptors: dict[UUID, ProviderEndpointDescriptor] = {}
-        self._retry_tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._providers: dict[UUID, _ProviderRuntimeState] = {}
         self._closed = False
         self._lock = asyncio.Lock()
 
     def get(self, provider_instance_id: UUID) -> ProviderSession | None:
         """Return the active session for one Provider, when present."""
-        return self._sessions.get(provider_instance_id)
+        provider = self._providers.get(provider_instance_id)
+        return provider.active_session if provider is not None else None
 
     def connection_status(
         self,
         provider_instance_id: UUID,
     ) -> ProviderConnectionStatus | None:
         """Return the latest local connection-state snapshot."""
-        return self._statuses.get(provider_instance_id)
+        provider = self._providers.get(provider_instance_id)
+        return provider.connection_status if provider is not None else None
 
     async def establish(
         self,
@@ -142,22 +151,20 @@ class ProviderSessionManager:
         async with self._lock:
             if self._closed:
                 raise RuntimeError("Provider session manager is closed")
-            desired = self._desired_descriptors.get(
-                descriptor.provider_instance_id
+            provider = self._providers.setdefault(
+                descriptor.provider_instance_id,
+                _ProviderRuntimeState(),
             )
+            desired = provider.desired_descriptor
             descriptor_is_stale = (
                 desired is not None
                 and desired.endpoint_generation
                 > descriptor.endpoint_generation
             )
             if not descriptor_is_stale:
-                self._desired_descriptors[descriptor.provider_instance_id] = (
-                    descriptor
-                )
-            retry_task = self._retry_tasks.pop(
-                descriptor.provider_instance_id,
-                None,
-            )
+                provider.desired_descriptor = descriptor
+            retry_task = provider.retry_task
+            provider.retry_task = None
 
         if descriptor_is_stale:
             current_session = self.get(descriptor.provider_instance_id)
@@ -197,8 +204,13 @@ class ProviderSessionManager:
             if candidate is None:
                 await channel.close()
                 async with self._lock:
-                    surviving_session = self._sessions.get(
-                        descriptor.provider_instance_id
+                    provider = self._providers.get(
+                        descriptor.provider_instance_id,
+                    )
+                    surviving_session = (
+                        provider.active_session
+                        if provider is not None
+                        else None
                     )
                 if surviving_session is None:
                     raise SfpConnectionError(
@@ -217,31 +229,22 @@ class ProviderSessionManager:
         except BaseException:
             await channel.close()
             async with self._lock:
-                if (
-                    self._attempts.get(descriptor.provider_instance_id)
-                    is attempt
-                ):
-                    self._attempts.pop(
-                        descriptor.provider_instance_id,
-                        None,
-                    )
-                    current_session = self._sessions.get(
-                        descriptor.provider_instance_id
-                    )
+                provider = self._providers.get(
+                    descriptor.provider_instance_id,
+                )
+                if provider is not None and provider.attempt_token is attempt:
+                    provider.attempt_token = None
+                    current_session = provider.active_session
                     if current_session is None:
-                        self._statuses[descriptor.provider_instance_id] = (
-                            ProviderConnectionStatus(
-                                provider_instance_id=(
-                                    descriptor.provider_instance_id
-                                ),
-                                state=ProviderConnectionState.UNAVAILABLE,
-                                active_endpoint_generation=None,
-                                candidate_endpoint_generation=None,
-                            )
+                        provider.connection_status = ProviderConnectionStatus(
+                            provider_instance_id=descriptor.provider_instance_id,
+                            state=ProviderConnectionState.UNAVAILABLE,
+                            active_endpoint_generation=None,
+                            candidate_endpoint_generation=None,
                         )
                     else:
-                        self._statuses[descriptor.provider_instance_id] = (
-                            _available_status(current_session)
+                        provider.connection_status = _available_status(
+                            current_session
                         )
             raise
 
@@ -250,18 +253,15 @@ class ProviderSessionManager:
         replaced_watcher: asyncio.Task[None] | None = None
         if candidate_was_promoted:
             async with self._lock:
-                if self._sessions.get(result.provider_instance_id) is result:
-                    replaced_watcher = self._watchers.get(
-                        result.provider_instance_id
-                    )
-                    self._watchers[result.provider_instance_id] = (
-                        asyncio.create_task(
-                            self._watch_session(result),
-                            name=(
-                                "stateforge-sfp-channel-"
-                                f"{result.provider_instance_id}"
-                            ),
-                        )
+                provider = self._providers.get(result.provider_instance_id)
+                if provider is not None and provider.active_session is result:
+                    replaced_watcher = provider.channel_watcher
+                    provider.channel_watcher = asyncio.create_task(
+                        self._watch_session(result),
+                        name=(
+                            "stateforge-sfp-channel-"
+                            f"{result.provider_instance_id}"
+                        ),
                     )
         await _cancel_task(replaced_watcher)
         if replaced_session is not None:
@@ -319,18 +319,16 @@ class ProviderSessionManager:
         replaced_session: ProviderSession | None = None
         superseded_session: ProviderSession | None = None
         async with self._lock:
-            attempt_is_current = (
-                self._attempts.get(descriptor.provider_instance_id) is attempt
+            provider = self._providers.setdefault(
+                descriptor.provider_instance_id,
+                _ProviderRuntimeState(),
             )
+            attempt_is_current = provider.attempt_token is attempt
             if not attempt_is_current:
-                superseded_session = self._sessions.get(
-                    descriptor.provider_instance_id
-                )
+                superseded_session = provider.active_session
             else:
-                self._attempts.pop(descriptor.provider_instance_id, None)
-            current_session = self._sessions.get(
-                descriptor.provider_instance_id
-            )
+                provider.attempt_token = None
+            current_session = provider.active_session
             if attempt_is_current and current_session is not None:
                 if _matches(current_session, descriptor) or (
                     current_session.endpoint_generation
@@ -340,10 +338,8 @@ class ProviderSessionManager:
                 else:
                     replaced_session = current_session
             if attempt_is_current and superseded_session is None:
-                self._sessions[descriptor.provider_instance_id] = candidate
-                self._statuses[descriptor.provider_instance_id] = (
-                    _available_status(candidate)
-                )
+                provider.active_session = candidate
+                provider.connection_status = _available_status(candidate)
 
         if not attempt_is_current:
             if superseded_session is None:
@@ -358,12 +354,19 @@ class ProviderSessionManager:
     async def remove(self, provider_instance_id: UUID) -> None:
         """Remove and close the active session for one Provider."""
         async with self._lock:
-            session = self._sessions.pop(provider_instance_id, None)
-            watcher = self._watchers.pop(provider_instance_id, None)
-            retry_task = self._retry_tasks.pop(provider_instance_id, None)
-            self._desired_descriptors.pop(provider_instance_id, None)
-            self._attempts.pop(provider_instance_id, None)
-            self._statuses[provider_instance_id] = ProviderConnectionStatus(
+            provider = self._providers.setdefault(
+                provider_instance_id,
+                _ProviderRuntimeState(),
+            )
+            session = provider.active_session
+            watcher = provider.channel_watcher
+            retry_task = provider.retry_task
+            provider.desired_descriptor = None
+            provider.active_session = None
+            provider.attempt_token = None
+            provider.channel_watcher = None
+            provider.retry_task = None
+            provider.connection_status = ProviderConnectionStatus(
                 provider_instance_id=provider_instance_id,
                 state=ProviderConnectionState.UNAVAILABLE,
                 active_endpoint_generation=None,
@@ -378,22 +381,32 @@ class ProviderSessionManager:
         """Close every active Provider channel."""
         async with self._lock:
             self._closed = True
-            sessions = tuple(self._sessions.values())
-            watchers = tuple(self._watchers.values())
-            retry_tasks = tuple(self._retry_tasks.values())
-            self._sessions.clear()
-            self._watchers.clear()
-            self._retry_tasks.clear()
-            self._desired_descriptors.clear()
-            self._attempts.clear()
-            for provider_instance_id in tuple(self._statuses):
-                self._statuses[provider_instance_id] = (
-                    ProviderConnectionStatus(
-                        provider_instance_id=provider_instance_id,
-                        state=ProviderConnectionState.UNAVAILABLE,
-                        active_endpoint_generation=None,
-                        candidate_endpoint_generation=None,
-                    )
+            sessions = tuple(
+                provider.active_session
+                for provider in self._providers.values()
+                if provider.active_session is not None
+            )
+            watchers = tuple(
+                provider.channel_watcher
+                for provider in self._providers.values()
+                if provider.channel_watcher is not None
+            )
+            retry_tasks = tuple(
+                provider.retry_task
+                for provider in self._providers.values()
+                if provider.retry_task is not None
+            )
+            for provider_instance_id, provider in self._providers.items():
+                provider.desired_descriptor = None
+                provider.active_session = None
+                provider.attempt_token = None
+                provider.channel_watcher = None
+                provider.retry_task = None
+                provider.connection_status = ProviderConnectionStatus(
+                    provider_instance_id=provider_instance_id,
+                    state=ProviderConnectionState.UNAVAILABLE,
+                    active_endpoint_generation=None,
+                    candidate_endpoint_generation=None,
                 )
         for retry_task in retry_tasks:
             retry_task.cancel()
@@ -409,17 +422,19 @@ class ProviderSessionManager:
     async def _schedule_retry(self, provider_instance_id: UUID) -> None:
         """Ensure exactly one bounded retry loop exists for a Provider."""
         async with self._lock:
+            provider = self._providers.get(provider_instance_id)
             if (
                 self._closed
-                or provider_instance_id not in self._desired_descriptors
+                or provider is None
+                or provider.desired_descriptor is None
             ):
                 return
-            if provider_instance_id in self._attempts:
+            if provider.attempt_token is not None:
                 return
-            existing = self._retry_tasks.get(provider_instance_id)
+            existing = provider.retry_task
             if existing is not None and not existing.done():
                 return
-            self._retry_tasks[provider_instance_id] = asyncio.create_task(
+            provider.retry_task = asyncio.create_task(
                 self._retry_loop(provider_instance_id),
                 name=f"stateforge-sfp-retry-{provider_instance_id}",
             )
@@ -482,15 +497,14 @@ class ProviderSessionManager:
         finally:
             reschedule = False
             async with self._lock:
+                provider = self._providers.get(provider_instance_id)
                 if (
-                    self._retry_tasks.get(provider_instance_id)
-                    is asyncio.current_task()
+                    provider is not None
+                    and provider.retry_task is asyncio.current_task()
                 ):
-                    self._retry_tasks.pop(provider_instance_id, None)
-                    desired = self._desired_descriptors.get(
-                        provider_instance_id
-                    )
-                    active = self._sessions.get(provider_instance_id)
+                    provider.retry_task = None
+                    desired = provider.desired_descriptor
+                    active = provider.active_session
                     reschedule = (
                         connected
                         and not self._closed
@@ -510,9 +524,14 @@ class ProviderSessionManager:
     ) -> ProviderEndpointDescriptor | None:
         """Reload and retain the current validated retry target."""
         async with self._lock:
-            desired = self._desired_descriptors.get(provider_instance_id)
-            if self._closed or desired is None:
+            provider = self._providers.get(provider_instance_id)
+            if (
+                self._closed
+                or provider is None
+                or provider.desired_descriptor is None
+            ):
                 return None
+            desired = provider.desired_descriptor
             loader = self._descriptor_loader
         if loader is None:
             return desired
@@ -523,14 +542,19 @@ class ProviderSessionManager:
                 "Reloaded descriptor returned a different Provider identity"
             )
         async with self._lock:
-            current = self._desired_descriptors.get(provider_instance_id)
-            if self._closed or current is None:
+            provider = self._providers.get(provider_instance_id)
+            if (
+                self._closed
+                or provider is None
+                or provider.desired_descriptor is None
+            ):
                 return None
+            current = provider.desired_descriptor
             if loaded.endpoint_generation < current.endpoint_generation:
                 raise SfpConnectionError(
                     "Reloaded descriptor endpoint generation moved backwards"
                 )
-            self._desired_descriptors[provider_instance_id] = loaded
+            provider.desired_descriptor = loaded
         return loaded
 
     def _retry_delay(self, attempt_number: int) -> float:
@@ -553,21 +577,19 @@ class ProviderSessionManager:
     ) -> None:
         """Record incompatibility unless an older session still survives."""
         async with self._lock:
-            current_session = self._sessions.get(
-                descriptor.provider_instance_id
+            provider = self._providers.setdefault(
+                descriptor.provider_instance_id,
+                _ProviderRuntimeState(),
             )
+            current_session = provider.active_session
             if current_session is not None:
-                self._statuses[descriptor.provider_instance_id] = (
-                    _available_status(current_session)
-                )
+                provider.connection_status = _available_status(current_session)
                 return
-            self._statuses[descriptor.provider_instance_id] = (
-                ProviderConnectionStatus(
-                    provider_instance_id=descriptor.provider_instance_id,
-                    state=ProviderConnectionState.INCOMPATIBLE,
-                    active_endpoint_generation=None,
-                    candidate_endpoint_generation=None,
-                )
+            provider.connection_status = ProviderConnectionStatus(
+                provider_instance_id=descriptor.provider_instance_id,
+                state=ProviderConnectionState.INCOMPATIBLE,
+                active_endpoint_generation=None,
+                candidate_endpoint_generation=None,
             )
 
     async def _watch_session(self, session: ProviderSession) -> None:
@@ -591,14 +613,14 @@ class ProviderSessionManager:
     ) -> None:
         """Remove a failed active session without disturbing replacements."""
         async with self._lock:
-            if self._sessions.get(session.provider_instance_id) is not session:
+            provider = self._providers.get(session.provider_instance_id)
+            if provider is None or provider.active_session is not session:
                 return
-            self._sessions.pop(session.provider_instance_id, None)
-            watcher = self._watchers.get(session.provider_instance_id)
-            if watcher is asyncio.current_task():
-                self._watchers.pop(session.provider_instance_id, None)
+            provider.active_session = None
+            if provider.channel_watcher is asyncio.current_task():
+                provider.channel_watcher = None
 
-            status = self._statuses.get(session.provider_instance_id)
+            status = provider.connection_status
             if (
                 status is not None
                 and status.state
@@ -617,13 +639,11 @@ class ProviderSessionManager:
                 state = ProviderConnectionState.UNAVAILABLE
                 candidate_generation = None
 
-            self._statuses[session.provider_instance_id] = (
-                ProviderConnectionStatus(
-                    provider_instance_id=session.provider_instance_id,
-                    state=state,
-                    active_endpoint_generation=None,
-                    candidate_endpoint_generation=candidate_generation,
-                )
+            provider.connection_status = ProviderConnectionStatus(
+                provider_instance_id=session.provider_instance_id,
+                state=state,
+                active_endpoint_generation=None,
+                candidate_endpoint_generation=candidate_generation,
             )
         await session._channel.close()
         await self._schedule_retry(session.provider_instance_id)
@@ -634,9 +654,11 @@ class ProviderSessionManager:
     ) -> tuple[ProviderSession | None, object | None]:
         """Record a provisional connection without hiding an active session."""
         async with self._lock:
-            current_session = self._sessions.get(
-                descriptor.provider_instance_id
+            provider = self._providers.setdefault(
+                descriptor.provider_instance_id,
+                _ProviderRuntimeState(),
             )
+            current_session = provider.active_session
             if current_session is not None and (
                 _matches(current_session, descriptor)
                 or current_session.endpoint_generation
@@ -645,25 +667,21 @@ class ProviderSessionManager:
                 return current_session, None
 
             attempt = object()
-            self._attempts[descriptor.provider_instance_id] = attempt
+            provider.attempt_token = attempt
             state = (
                 ProviderConnectionState.REPLACING_CONNECTING
                 if current_session is not None
                 else ProviderConnectionState.CONNECTING
             )
-            self._statuses[descriptor.provider_instance_id] = (
-                ProviderConnectionStatus(
-                    provider_instance_id=descriptor.provider_instance_id,
-                    state=state,
-                    active_endpoint_generation=(
-                        current_session.endpoint_generation
-                        if current_session is not None
-                        else None
-                    ),
-                    candidate_endpoint_generation=(
-                        descriptor.endpoint_generation
-                    ),
-                )
+            provider.connection_status = ProviderConnectionStatus(
+                provider_instance_id=descriptor.provider_instance_id,
+                state=state,
+                active_endpoint_generation=(
+                    current_session.endpoint_generation
+                    if current_session is not None
+                    else None
+                ),
+                candidate_endpoint_generation=descriptor.endpoint_generation,
             )
             return None, attempt
 
@@ -674,32 +692,24 @@ class ProviderSessionManager:
     ) -> bool:
         """Advance the current provisional endpoint to SFP handshaking."""
         async with self._lock:
-            if (
-                self._attempts.get(descriptor.provider_instance_id)
-                is not attempt
-            ):
+            provider = self._providers.get(descriptor.provider_instance_id)
+            if provider is None or provider.attempt_token is not attempt:
                 return False
-            current_session = self._sessions.get(
-                descriptor.provider_instance_id
-            )
+            current_session = provider.active_session
             state = (
                 ProviderConnectionState.REPLACING_HANDSHAKING
                 if current_session is not None
                 else ProviderConnectionState.HANDSHAKING
             )
-            self._statuses[descriptor.provider_instance_id] = (
-                ProviderConnectionStatus(
-                    provider_instance_id=descriptor.provider_instance_id,
-                    state=state,
-                    active_endpoint_generation=(
-                        current_session.endpoint_generation
-                        if current_session is not None
-                        else None
-                    ),
-                    candidate_endpoint_generation=(
-                        descriptor.endpoint_generation
-                    ),
-                )
+            provider.connection_status = ProviderConnectionStatus(
+                provider_instance_id=descriptor.provider_instance_id,
+                state=state,
+                active_endpoint_generation=(
+                    current_session.endpoint_generation
+                    if current_session is not None
+                    else None
+                ),
+                candidate_endpoint_generation=descriptor.endpoint_generation,
             )
             return True
 

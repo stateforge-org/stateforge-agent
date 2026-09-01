@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
+from stateforge_agent._identity import parse_canonical_uuid4
+
 PROVIDER_DESCRIPTOR_SUFFIX = ".sfp.json"
 
 _SCHEMA_VERSION = "1"
@@ -17,7 +19,6 @@ _DESCRIPTOR_MODE = 0o640
 _SOCKET_MODE = 0o660
 _MAXIMUM_DESCRIPTOR_BYTES = 16 * 1024
 _MAXIMUM_ENDPOINT_GENERATION = (2**63) - 1
-_UUID_VERSION = 4
 _ROOT_FIELDS = {
     "schema_version",
     "provider_instance_id",
@@ -151,18 +152,11 @@ def _parse_descriptor(  # noqa: PLR0912
             "provider_instance_id must be a canonical UUIDv4"
         )
     try:
-        provider_instance_id = UUID(provider_instance_value)
+        provider_instance_id = parse_canonical_uuid4(provider_instance_value)
     except ValueError as error:
         raise ProviderDescriptorError(
             "provider_instance_id must be a canonical UUIDv4"
         ) from error
-    if (
-        provider_instance_id.version != _UUID_VERSION
-        or str(provider_instance_id) != provider_instance_value
-    ):
-        raise ProviderDescriptorError(
-            "provider_instance_id must be a canonical UUIDv4"
-        )
 
     endpoint_generation = document.get("endpoint_generation")
     if (

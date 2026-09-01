@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from stateforge_agent import __version__
 from stateforge_agent._config.models import AgentConfiguration
+from stateforge_agent._identity import parse_canonical_uuid4
 from stateforge_agent._runtime.layout import (
     SYSTEM_RUNTIME_LAYOUT,
     RuntimeLayout,
@@ -35,7 +36,6 @@ from stateforge_agent._sfp import (
 
 _LOGGER = logging.getLogger(__name__)
 _SUPPORTED_SFP_VERSIONS = (SfpVersion(major=1, minor=0),)
-_UUID_VERSION = 4
 
 
 def run_agent(
@@ -182,12 +182,6 @@ def _descriptor_provider_instance_id(path: Path) -> UUID | None:
         return None
     value = path.name.removesuffix(PROVIDER_DESCRIPTOR_SUFFIX)
     try:
-        provider_instance_id = UUID(value)
+        return parse_canonical_uuid4(value)
     except ValueError:
         return None
-    if (
-        provider_instance_id.version != _UUID_VERSION
-        or str(provider_instance_id) != value
-    ):
-        return None
-    return provider_instance_id

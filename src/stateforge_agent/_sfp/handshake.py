@@ -11,6 +11,7 @@ from stateforge_protocol.sfp.bootstrap.v1 import (
     bootstrap_pb2_grpc,
 )
 
+from stateforge_agent._identity import parse_canonical_uuid4
 from stateforge_agent._runtime.provider_descriptor import (
     ProviderEndpointDescriptor,
 )
@@ -19,8 +20,6 @@ from stateforge_agent._sfp.errors import (
     SfpIncompatibleError,
 )
 from stateforge_agent._sfp.version import SfpVersion
-
-_UUID_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,25 +94,24 @@ async def perform_handshake(
             "Handshake selected an SFP version the Agent did not offer"
         )
 
-    identifiers: dict[str, UUID] = {}
-    for field_name, value in (
-        ("provider_runtime_id", response.provider_runtime_id),
-        ("session_id", response.session_id),
-    ):
-        try:
-            identifier = UUID(value)
-        except ValueError as error:
-            raise SfpConnectionError(
-                f"Handshake {field_name} must be a canonical UUIDv4"
-            ) from error
-        if identifier.version != _UUID_VERSION or str(identifier) != value:
-            raise SfpConnectionError(
-                f"Handshake {field_name} must be a canonical UUIDv4"
-            )
-        identifiers[field_name] = identifier
+    try:
+        provider_runtime_id = parse_canonical_uuid4(
+            response.provider_runtime_id
+        )
+    except ValueError as error:
+        raise SfpConnectionError(
+            "Handshake provider_runtime_id must be a canonical UUIDv4"
+        ) from error
+
+    try:
+        session_id = parse_canonical_uuid4(response.session_id)
+    except ValueError as error:
+        raise SfpConnectionError(
+            "Handshake session_id must be a canonical UUIDv4"
+        ) from error
 
     return HandshakeResult(
         selected_sfp_version=selected_version,
-        provider_runtime_id=identifiers["provider_runtime_id"],
-        session_id=identifiers["session_id"],
+        provider_runtime_id=provider_runtime_id,
+        session_id=session_id,
     )
