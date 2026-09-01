@@ -14,11 +14,6 @@ from stateforge_agent.cli import main
 _VALID_CONFIGURATION = """
 schema_version = 1
 
-[agent]
-data_directory = "/var/lib/stateforge-agent"
-runtime_directory = "/run/stateforge-agent"
-staging_directory = "/var/lib/stateforge-agent/staging"
-
 [control_plane]
 url = "https://control.stateforge.example"
 ca_certificate = "/etc/pki/tls/certs/ca-bundle.crt"
@@ -26,14 +21,12 @@ connect_timeout_seconds = 10
 request_timeout_seconds = 30
 
 [providers]
-discovery_directory = "/run/stateforge-agent/providers"
 health_interval_seconds = 15
 reconnect_initial_delay_seconds = 1
 reconnect_max_delay_seconds = 30
 
 [journal]
 backend = "sqlite"
-path = "/var/lib/stateforge-agent/journal/agent.db"
 
 [logging]
 level = "info"
@@ -128,8 +121,8 @@ def test_rejects_unknown_key_with_defining_source(tmp_path: Path) -> None:
             "must be greater than zero",
         ),
         (
-            'runtime_directory = "/run/stateforge-agent"',
-            'runtime_directory = "run/stateforge-agent"',
+            'ca_certificate = "/etc/pki/tls/certs/ca-bundle.crt"',
+            'ca_certificate = "etc/pki/tls/certs/ca-bundle.crt"',
             "must be an absolute path",
         ),
     ],
@@ -163,6 +156,42 @@ def test_rejects_reconnect_maximum_below_initial_delay(
     )
 
     with pytest.raises(ConfigurationError, match="greater than or equal"):
+        load_configuration(config_path)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected_field"),
+    [
+        (
+            "[control_plane]",
+            '[agent]\ndata_directory = "/tmp/stateforge"\n\n[control_plane]',
+            "agent",
+        ),
+        (
+            "[providers]",
+            '[providers]\ndiscovery_directory = "/tmp/providers"',
+            "providers.discovery_directory",
+        ),
+        (
+            "[journal]",
+            '[journal]\npath = "/tmp/agent.db"',
+            "journal.path",
+        ),
+    ],
+)
+def test_rejects_platform_owned_path_configuration(
+    tmp_path: Path,
+    old: str,
+    new: str,
+    expected_field: str,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _VALID_CONFIGURATION.replace(old, new, 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match=expected_field):
         load_configuration(config_path)
 
 

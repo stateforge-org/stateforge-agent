@@ -7,11 +7,6 @@
 
 schema_version = 1
 
-[agent]
-data_directory = "/var/lib/stateforge-agent"
-runtime_directory = "/run/stateforge-agent"
-staging_directory = "/var/lib/stateforge-agent/staging"
-
 [control_plane]
 # The Agent will not start until this value is configured.
 url = ""
@@ -20,14 +15,12 @@ connect_timeout_seconds = 10
 request_timeout_seconds = 30
 
 [providers]
-discovery_directory = "/run/stateforge-agent/providers"
 health_interval_seconds = 15
 reconnect_initial_delay_seconds = 1
 reconnect_max_delay_seconds = 30
 
 [journal]
 backend = "sqlite"
-path = "/var/lib/stateforge-agent/journal/agent.db"
 
 [logging]
 level = "info"

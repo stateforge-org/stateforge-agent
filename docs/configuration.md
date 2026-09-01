@@ -21,11 +21,6 @@ values are not silently coerced to another type.
 ```toml
 schema_version = 1
 
-[agent]
-data_directory = "/var/lib/stateforge-agent"
-runtime_directory = "/run/stateforge-agent"
-staging_directory = "/var/lib/stateforge-agent/staging"
-
 [control_plane]
 url = "https://control.stateforge.example"
 ca_certificate = "/etc/pki/tls/certs/ca-bundle.crt"
@@ -33,14 +28,12 @@ connect_timeout_seconds = 10
 request_timeout_seconds = 30
 
 [providers]
-discovery_directory = "/run/stateforge-agent/providers"
 health_interval_seconds = 15
 reconnect_initial_delay_seconds = 1
 reconnect_max_delay_seconds = 30
 
 [journal]
 backend = "sqlite"
-path = "/var/lib/stateforge-agent/journal/agent.db"
 
 [logging]
 level = "info"
@@ -53,25 +46,29 @@ destination = "stderr"
 | Field | Type | Required | Accepted value | Purpose |
 | --- | --- | --- | --- | --- |
 | `schema_version` | Integer | Yes | `1` | Selects the configuration schema understood by this Agent release. |
-| `agent` | Table | Yes | See below | Defines Agent-owned filesystem locations. |
 | `control_plane` | Table | Yes | See below | Defines the Control Plane connection. |
 | `providers` | Table | Yes | See below | Defines local Provider discovery and connection behavior. |
 | `journal` | Table | Yes | See below | Defines durable local journal storage. |
 | `logging` | Table | Yes | See below | Defines process logging. |
 
-## `[agent]`
+## Runtime filesystem layout
 
-All paths in this section must be absolute.
+Agent-owned filesystem locations are part of the platform packaging contract,
+not operator configuration. This prevents `config.toml` from selecting paths
+that the service manager did not create or grant to the Agent process.
 
-| Field | Type | Packaged value | Purpose |
-| --- | --- | --- | --- |
-| `data_directory` | String path | `/var/lib/stateforge-agent` | Persistent Agent-owned state. |
-| `runtime_directory` | String path | `/run/stateforge-agent` | Volatile runtime state created for the running Agent. |
-| `staging_directory` | String path | `/var/lib/stateforge-agent/staging` | SDK-managed workspace used to stage operation data. |
+| Purpose | Packaged path | Owner |
+| --- | --- | --- |
+| Persistent Agent state | `/var/lib/stateforge-agent` | systemd `StateDirectory` |
+| Operation staging | `/var/lib/stateforge-agent/staging` | StateForge Agent |
+| Durable journal | `/var/lib/stateforge-agent/journal/agent.db` | StateForge Agent |
+| Volatile runtime state | `/run/stateforge-agent` | RPM `tmpfiles.d` policy |
+| Local control socket | `/run/stateforge-agent/control.sock` | StateForge Agent |
+| Provider discovery | `/run/stateforge-agent/providers` | RPM `tmpfiles.d` policy |
 
-The configuration loader validates that these are absolute paths. It does not
-create them or verify their ownership. Packaging and the runtime are
-responsible for provisioning and using them safely.
+Tests and alternative packaging may supply a different internal runtime
+layout. The TOML schema intentionally provides no filesystem-location
+overrides.
 
 ## `[control_plane]`
 
@@ -106,12 +103,11 @@ does not check whether the referenced file exists during `check-config`.
 
 | Field | Type | Packaged value | Validation and purpose |
 | --- | --- | --- | --- |
-| `discovery_directory` | String path | `/run/stateforge-agent/providers` | Absolute path monitored for SFP endpoint descriptors. |
 | `health_interval_seconds` | Integer | `15` | Provider health-monitoring interval. Must be greater than zero. |
 | `reconnect_initial_delay_seconds` | Integer | `1` | Initial bounded-backoff delay after a failed Provider connection. Must be greater than zero. |
 | `reconnect_max_delay_seconds` | Integer | `30` | Maximum reconnect delay. Must be greater than zero and greater than or equal to the initial delay. |
 
-The RPM creates the default discovery directory through `systemd-tmpfiles`.
+The RPM creates the Provider discovery directory through `systemd-tmpfiles`.
 Provider processes publish their endpoint descriptors and Unix domain sockets
 there; the Agent does not use this directory for Provider-specific data.
 
@@ -120,7 +116,9 @@ there; the Agent does not use this directory for Provider-specific data.
 | Field | Type | Packaged value | Validation and purpose |
 | --- | --- | --- | --- |
 | `backend` | String | `sqlite` | Durable journal backend. `sqlite` is the only value supported by schema version 1. |
-| `path` | String path | `/var/lib/stateforge-agent/journal/agent.db` | Absolute path of the Agent journal database. |
+
+The journal database is stored at the package-owned path
+`/var/lib/stateforge-agent/journal/agent.db`.
 
 The selected Backup Engine does not belong in this section. Backup Engines are
 operation tools selected through Control Plane policy rather than global Agent

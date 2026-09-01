@@ -18,7 +18,6 @@ from stateforge_agent._config.errors import (
 )
 from stateforge_agent._config.models import (
     AgentConfiguration,
-    AgentRuntimeConfiguration,
     ControlPlaneConfiguration,
     JournalBackend,
     JournalConfiguration,
@@ -39,7 +38,6 @@ Provenance: TypeAlias = dict[ConfigPath, Path]
 _SUPPORTED_SCHEMA_VERSION = 1
 _TOP_LEVEL_KEYS = {
     "schema_version",
-    "agent",
     "control_plane",
     "providers",
     "journal",
@@ -312,19 +310,6 @@ def _validate_configuration(
         required=_TOP_LEVEL_KEYS,
     )
     validator.table(
-        ("agent",),
-        allowed={
-            "data_directory",
-            "runtime_directory",
-            "staging_directory",
-        },
-        required={
-            "data_directory",
-            "runtime_directory",
-            "staging_directory",
-        },
-    )
-    validator.table(
         ("control_plane",),
         allowed={
             "url",
@@ -342,13 +327,11 @@ def _validate_configuration(
     validator.table(
         ("providers",),
         allowed={
-            "discovery_directory",
             "health_interval_seconds",
             "reconnect_initial_delay_seconds",
             "reconnect_max_delay_seconds",
         },
         required={
-            "discovery_directory",
             "health_interval_seconds",
             "reconnect_initial_delay_seconds",
             "reconnect_max_delay_seconds",
@@ -356,8 +339,8 @@ def _validate_configuration(
     )
     validator.table(
         ("journal",),
-        allowed={"backend", "path"},
-        required={"backend", "path"},
+        allowed={"backend"},
+        required={"backend"},
     )
     validator.table(
         ("logging",),
@@ -373,10 +356,6 @@ def _validate_configuration(
             f"{_SUPPORTED_SCHEMA_VERSION}",
         )
 
-    data_directory = validator.absolute_path(("agent", "data_directory"))
-    runtime_directory = validator.absolute_path(("agent", "runtime_directory"))
-    staging_directory = validator.absolute_path(("agent", "staging_directory"))
-
     control_plane_url = validator.string(("control_plane", "url"))
     _validate_control_plane_url(validator, control_plane_url)
     ca_certificate = validator.absolute_path(
@@ -389,9 +368,6 @@ def _validate_configuration(
         ("control_plane", "request_timeout_seconds")
     )
 
-    provider_directory = validator.absolute_path(
-        ("providers", "discovery_directory")
-    )
     health_interval = validator.positive_integer(
         ("providers", "health_interval_seconds")
     )
@@ -413,7 +389,6 @@ def _validate_configuration(
         )
 
     journal_backend = validator.choice(("journal", "backend"), {"sqlite"})
-    journal_path = validator.absolute_path(("journal", "path"))
 
     log_level = validator.choice(
         ("logging", "level"),
@@ -427,11 +402,6 @@ def _validate_configuration(
 
     return AgentConfiguration(
         schema_version=schema_version,
-        agent=AgentRuntimeConfiguration(
-            data_directory=data_directory,
-            runtime_directory=runtime_directory,
-            staging_directory=staging_directory,
-        ),
         control_plane=ControlPlaneConfiguration(
             url=control_plane_url,
             ca_certificate=ca_certificate,
@@ -439,14 +409,12 @@ def _validate_configuration(
             request_timeout_seconds=request_timeout,
         ),
         providers=ProviderConfiguration(
-            discovery_directory=provider_directory,
             health_interval_seconds=health_interval,
             reconnect_initial_delay_seconds=reconnect_initial_delay,
             reconnect_max_delay_seconds=reconnect_max_delay,
         ),
         journal=JournalConfiguration(
             backend=cast(JournalBackend, journal_backend),
-            path=journal_path,
         ),
         logging=LoggingConfiguration(
             level=cast(LogLevel, log_level),

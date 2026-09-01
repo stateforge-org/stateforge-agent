@@ -10,6 +10,10 @@ from uuid import UUID, uuid4
 
 from stateforge_agent import __version__
 from stateforge_agent._config.models import AgentConfiguration
+from stateforge_agent._runtime.layout import (
+    SYSTEM_RUNTIME_LAYOUT,
+    RuntimeLayout,
+)
 from stateforge_agent._runtime.logging import configure_logging
 from stateforge_agent._runtime.provider_descriptor import (
     PROVIDER_DESCRIPTOR_SUFFIX,
@@ -34,22 +38,29 @@ _SUPPORTED_SFP_VERSIONS = (SfpVersion(major=1, minor=0),)
 _UUID_VERSION = 4
 
 
-def run_agent(configuration: AgentConfiguration) -> int:
+def run_agent(
+    configuration: AgentConfiguration,
+    *,
+    runtime_layout: RuntimeLayout = SYSTEM_RUNTIME_LAYOUT,
+) -> int:
     """Run the Agent until a normal process-termination signal arrives."""
     configure_logging(configuration.logging)
     try:
-        return asyncio.run(_run_agent(configuration))
+        return asyncio.run(_run_agent(configuration, runtime_layout))
     except KeyboardInterrupt:
         return 0
 
 
-async def _run_agent(configuration: AgentConfiguration) -> int:
+async def _run_agent(
+    configuration: AgentConfiguration,
+    runtime_layout: RuntimeLayout = SYSTEM_RUNTIME_LAYOUT,
+) -> int:
     """Prepare runtime services and drive the monitoring loop."""
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     installed_signals = _install_signal_handlers(loop, stop_event)
     monitor = ProviderDirectoryMonitor(
-        configuration.providers.discovery_directory
+        runtime_layout.provider_discovery_directory
     )
 
     def reload_provider_descriptor(

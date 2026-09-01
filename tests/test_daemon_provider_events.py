@@ -12,7 +12,6 @@ import pytest
 
 from stateforge_agent._config.models import (
     AgentConfiguration,
-    AgentRuntimeConfiguration,
     ControlPlaneConfiguration,
     JournalConfiguration,
     LoggingConfiguration,
@@ -24,6 +23,7 @@ from stateforge_agent._runtime.daemon import (
     _install_signal_handlers,
     _process_events,
 )
+from stateforge_agent._runtime.layout import RuntimeLayout
 from stateforge_agent._runtime.provider_monitor import ProviderDirectoryMonitor
 from stateforge_agent._sfp import SfpConnectionError, SfpVersion
 
@@ -60,11 +60,6 @@ def _write_descriptor(directory: Path, *, valid: bool = True) -> Path:
 def _configuration(directory: Path) -> AgentConfiguration:
     return AgentConfiguration(
         schema_version=1,
-        agent=AgentRuntimeConfiguration(
-            data_directory=directory / "data",
-            runtime_directory=directory / "run",
-            staging_directory=directory / "staging",
-        ),
         control_plane=ControlPlaneConfiguration(
             url="https://control.stateforge.invalid",
             ca_certificate=directory / "ca.pem",
@@ -72,20 +67,25 @@ def _configuration(directory: Path) -> AgentConfiguration:
             request_timeout_seconds=30,
         ),
         providers=ProviderConfiguration(
-            discovery_directory=directory / "providers",
             health_interval_seconds=10,
             reconnect_initial_delay_seconds=1,
             reconnect_max_delay_seconds=30,
         ),
         journal=JournalConfiguration(
             backend="sqlite",
-            path=directory / "journal.sqlite3",
         ),
         logging=LoggingConfiguration(
             level="info",
             format="text",
             destination="stderr",
         ),
+    )
+
+
+def _runtime_layout(directory: Path) -> RuntimeLayout:
+    return RuntimeLayout(
+        state_directory=directory / "state",
+        runtime_directory=directory / "run",
     )
 
 
@@ -178,7 +178,13 @@ async def test_agent_runtime_starts_and_stops_cleanly(
 
     monkeypatch.setattr(daemon, "_install_signal_handlers", stop_after_start)
 
-    assert await daemon._run_agent(_configuration(tmp_path)) == 0
+    assert (
+        await daemon._run_agent(
+            _configuration(tmp_path),
+            _runtime_layout(tmp_path),
+        )
+        == 0
+    )
 
 
 def test_run_agent_returns_daemon_result(
