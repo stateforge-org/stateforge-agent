@@ -42,28 +42,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the StateForge Agent command-line interface."""
     parser = _create_parser()
     arguments = parser.parse_args(argv)
+    config_path = Path(arguments.config)
+    drop_in_directory = (
+        Path(arguments.drop_in_directory)
+        if arguments.drop_in_directory is not None
+        else None
+    )
+    try:
+        loaded = load_configuration(
+            config_path,
+            drop_in_directory=drop_in_directory,
+        )
+    except ConfigurationError as error:
+        sys.stderr.write(f"{error}\n")
+        return 2
 
     if arguments.command == "run":
-        return _run(
-            config_path=Path(arguments.config),
-            drop_in_directory=(
-                Path(arguments.drop_in_directory)
-                if arguments.drop_in_directory is not None
-                else None
-            ),
-        )
+        return run_agent(loaded.config)
 
-    if arguments.command == "check-config":
-        return _check_config(
-            config_path=Path(arguments.config),
-            drop_in_directory=(
-                Path(arguments.drop_in_directory)
-                if arguments.drop_in_directory is not None
-                else None
-            ),
-        )
-
-    parser.error(f"unsupported command: {arguments.command}")
+    source_list = "\n".join(f"- {source}" for source in loaded.sources)
+    sys.stdout.write(
+        "Configuration is valid.\n"
+        f"Fingerprint: {loaded.fingerprint}\n"
+        f"Sources:\n{source_list}\n"
+    )
+    return 0
 
 
 def _create_parser() -> argparse.ArgumentParser:
@@ -153,44 +156,3 @@ def _distribution_version() -> str:
         return version(_DISTRIBUTION_NAME)
     except PackageNotFoundError:
         return "unknown"
-
-
-def _run(
-    *,
-    config_path: Path,
-    drop_in_directory: Path | None,
-) -> int:
-    """Load configuration and start the long-running Agent runtime."""
-    try:
-        loaded = load_configuration(
-            config_path,
-            drop_in_directory=drop_in_directory,
-        )
-    except ConfigurationError as error:
-        sys.stderr.write(f"{error}\n")
-        return 2
-    return run_agent(loaded.config)
-
-
-def _check_config(
-    *,
-    config_path: Path,
-    drop_in_directory: Path | None,
-) -> int:
-    """Validate configuration and report its effective source identity."""
-    try:
-        loaded = load_configuration(
-            config_path,
-            drop_in_directory=drop_in_directory,
-        )
-    except ConfigurationError as error:
-        sys.stderr.write(f"{error}\n")
-        return 2
-
-    source_list = "\n".join(f"- {source}" for source in loaded.sources)
-    sys.stdout.write(
-        "Configuration is valid.\n"
-        f"Fingerprint: {loaded.fingerprint}\n"
-        f"Sources:\n{source_list}\n"
-    )
-    return 0

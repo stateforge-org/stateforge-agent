@@ -48,53 +48,14 @@ def load_provider_descriptor(
 ) -> ProviderEndpointDescriptor:
     """Load one strict descriptor without following symbolic links."""
     content, descriptor_status = _read_descriptor(path)
-    _validate_descriptor_metadata(
-        path=path,
-        discovery_directory=discovery_directory,
-        status=descriptor_status,
-    )
-
-    document = _parse_document(content, path)
-    _require_exact_fields(document, _ROOT_FIELDS, "descriptor")
-
-    schema_version = _require_string(document, "schema_version")
-    if schema_version != _SCHEMA_VERSION:
-        raise ProviderDescriptorError(
-            f"Unsupported Provider descriptor schema_version: {schema_version}"
-        )
-
-    provider_instance_id = _require_uuid4(
-        _require_string(document, "provider_instance_id")
-    )
-    endpoint_generation = _require_generation(
-        document.get("endpoint_generation")
-    )
-    transport = _require_object(document, "transport")
-    _require_exact_fields(transport, _TRANSPORT_FIELDS, "transport")
-    transport_type = _require_string(transport, "type")
-    if transport_type != _TRANSPORT_TYPE:
-        raise ProviderDescriptorError(
-            f"Unsupported Provider endpoint transport: {transport_type}"
-        )
-    socket_path = Path(_require_string(transport, "socket_path"))
-
-    _validate_paths(
+    descriptor = _parse_descriptor(content, path)
+    _validate_endpoint_files(
+        descriptor=descriptor,
         descriptor_path=path,
-        discovery_directory=discovery_directory,
-        provider_instance_id=provider_instance_id,
-        endpoint_generation=endpoint_generation,
-        socket_path=socket_path,
-    )
-    _validate_socket(
-        socket_path=socket_path,
         descriptor_status=descriptor_status,
+        discovery_directory=discovery_directory,
     )
-    return ProviderEndpointDescriptor(
-        schema_version=schema_version,
-        provider_instance_id=provider_instance_id,
-        endpoint_generation=endpoint_generation,
-        socket_path=socket_path,
-    )
+    return descriptor
 
 
 def _read_descriptor(path: Path) -> tuple[bytes, os.stat_result]:
@@ -139,49 +100,14 @@ def _read_descriptor(path: Path) -> tuple[bytes, os.stat_result]:
     return content, status
 
 
-def _validate_descriptor_metadata(
-    *,
+# Keep the complete schema visible as one linear security review surface.
+def _parse_descriptor(  # noqa: PLR0912
+    content: bytes,
     path: Path,
-    discovery_directory: Path,
-    status: os.stat_result,
-) -> None:
-    """Validate descriptor permissions and protected-directory membership."""
-    mode = stat.S_IMODE(status.st_mode)
-    if mode != _DESCRIPTOR_MODE:
-        raise ProviderDescriptorError(
-            f"Provider descriptor mode must be {_DESCRIPTOR_MODE:#05o}, "
-            f"found {mode:#05o}: {path}"
-        )
-
+) -> ProviderEndpointDescriptor:
+    """Parse and validate the complete descriptor document."""
     try:
-        directory_status = discovery_directory.lstat()
-    except OSError as error:
-        raise ProviderDescriptorError(
-            "Cannot inspect Provider discovery directory "
-            f"{discovery_directory}: {error}"
-        ) from error
-
-    if stat.S_ISLNK(directory_status.st_mode):
-        raise ProviderDescriptorError(
-            "Provider discovery directory must not be a symbolic link: "
-            f"{discovery_directory}"
-        )
-    if not stat.S_ISDIR(directory_status.st_mode):
-        raise ProviderDescriptorError(
-            "Provider discovery path is not a directory: "
-            f"{discovery_directory}"
-        )
-    if status.st_gid != directory_status.st_gid:
-        raise ProviderDescriptorError(
-            "Provider descriptor group must match the discovery directory: "
-            f"{path}"
-        )
-
-
-def _parse_document(content: bytes, path: Path) -> dict[str, object]:
-    """Decode one strict JSON object and reject duplicate fields."""
-    try:
-        parsed = json.loads(
+        document = json.loads(
             content,
             object_pairs_hook=_reject_duplicate_fields,
         )
@@ -190,11 +116,100 @@ def _parse_document(content: bytes, path: Path) -> dict[str, object]:
             f"Cannot parse Provider descriptor {path}: {error}"
         ) from error
 
-    if not isinstance(parsed, dict):
+    if not isinstance(document, dict):
         raise ProviderDescriptorError(
             f"Provider descriptor root must be a JSON object: {path}"
         )
-    return parsed
+
+    fields = set(document)
+    missing = sorted(_ROOT_FIELDS - fields)
+    unknown = sorted(fields - _ROOT_FIELDS)
+    if missing:
+        raise ProviderDescriptorError(
+            f"Provider descriptor is missing fields: {', '.join(missing)}"
+        )
+    if unknown:
+        raise ProviderDescriptorError(
+            "Provider descriptor contains unknown fields: "
+            f"{', '.join(unknown)}"
+        )
+
+    schema_version = document.get("schema_version")
+    if not isinstance(schema_version, str) or not schema_version:
+        raise ProviderDescriptorError(
+            "Provider descriptor field schema_version must be a non-empty "
+            "string"
+        )
+    if schema_version != _SCHEMA_VERSION:
+        raise ProviderDescriptorError(
+            f"Unsupported Provider descriptor schema_version: {schema_version}"
+        )
+
+    provider_instance_value = document.get("provider_instance_id")
+    if not isinstance(provider_instance_value, str):
+        raise ProviderDescriptorError(
+            "provider_instance_id must be a canonical UUIDv4"
+        )
+    try:
+        provider_instance_id = UUID(provider_instance_value)
+    except ValueError as error:
+        raise ProviderDescriptorError(
+            "provider_instance_id must be a canonical UUIDv4"
+        ) from error
+    if (
+        provider_instance_id.version != _UUID_VERSION
+        or str(provider_instance_id) != provider_instance_value
+    ):
+        raise ProviderDescriptorError(
+            "provider_instance_id must be a canonical UUIDv4"
+        )
+
+    endpoint_generation = document.get("endpoint_generation")
+    if (
+        not isinstance(endpoint_generation, int)
+        or isinstance(endpoint_generation, bool)
+        or endpoint_generation < 1
+        or endpoint_generation > _MAXIMUM_ENDPOINT_GENERATION
+    ):
+        raise ProviderDescriptorError(
+            "endpoint_generation must be an integer from 1 through "
+            f"{_MAXIMUM_ENDPOINT_GENERATION}"
+        )
+
+    transport = document.get("transport")
+    if not isinstance(transport, dict):
+        raise ProviderDescriptorError(
+            "Provider descriptor field transport must be an object"
+        )
+    transport_fields = set(transport)
+    missing = sorted(_TRANSPORT_FIELDS - transport_fields)
+    unknown = sorted(transport_fields - _TRANSPORT_FIELDS)
+    if missing:
+        raise ProviderDescriptorError(
+            f"Provider transport is missing fields: {', '.join(missing)}"
+        )
+    if unknown:
+        raise ProviderDescriptorError(
+            f"Provider transport contains unknown fields: {', '.join(unknown)}"
+        )
+
+    transport_type = transport.get("type")
+    if transport_type != _TRANSPORT_TYPE:
+        raise ProviderDescriptorError(
+            f"Unsupported Provider endpoint transport: {transport_type}"
+        )
+    socket_path_value = transport.get("socket_path")
+    if not isinstance(socket_path_value, str) or not socket_path_value:
+        raise ProviderDescriptorError(
+            "Provider descriptor field socket_path must be a non-empty string"
+        )
+
+    return ProviderEndpointDescriptor(
+        schema_version=schema_version,
+        provider_instance_id=provider_instance_id,
+        endpoint_generation=endpoint_generation,
+        socket_path=Path(socket_path_value),
+    )
 
 
 def _reject_duplicate_fields(
@@ -211,91 +226,47 @@ def _reject_duplicate_fields(
     return result
 
 
-def _require_exact_fields(
-    value: dict[str, object],
-    expected: set[str],
-    location: str,
-) -> None:
-    """Reject missing and unknown descriptor fields."""
-    fields = set(value)
-    missing = sorted(expected - fields)
-    unknown = sorted(fields - expected)
-    if missing:
-        raise ProviderDescriptorError(
-            f"Provider {location} is missing fields: {', '.join(missing)}"
-        )
-    if unknown:
-        raise ProviderDescriptorError(
-            f"Provider {location} contains unknown fields: "
-            f"{', '.join(unknown)}"
-        )
-
-
-def _require_string(value: dict[str, object], field: str) -> str:
-    """Read one non-empty descriptor string."""
-    result = value.get(field)
-    if not isinstance(result, str) or not result:
-        raise ProviderDescriptorError(
-            f"Provider descriptor field {field} must be a non-empty string"
-        )
-    return result
-
-
-def _require_object(
-    value: dict[str, object],
-    field: str,
-) -> dict[str, object]:
-    """Read one descriptor object."""
-    result = value.get(field)
-    if not isinstance(result, dict):
-        raise ProviderDescriptorError(
-            f"Provider descriptor field {field} must be an object"
-        )
-    return result
-
-
-def _require_uuid4(value: str) -> UUID:
-    """Read a canonical lowercase UUIDv4 Provider instance identity."""
-    try:
-        result = UUID(value)
-    except ValueError as error:
-        raise ProviderDescriptorError(
-            "provider_instance_id must be a canonical UUIDv4"
-        ) from error
-    if result.version != _UUID_VERSION or str(result) != value:
-        raise ProviderDescriptorError(
-            "provider_instance_id must be a canonical UUIDv4"
-        )
-    return result
-
-
-def _require_generation(value: object) -> int:
-    """Read a positive signed 64-bit endpoint generation."""
-    if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or value < 1
-        or value > _MAXIMUM_ENDPOINT_GENERATION
-    ):
-        raise ProviderDescriptorError(
-            "endpoint_generation must be an integer from 1 through "
-            f"{_MAXIMUM_ENDPOINT_GENERATION}"
-        )
-    return value
-
-
-def _validate_paths(
+# Keep the complete filesystem trust boundary visible in one place.
+def _validate_endpoint_files(  # noqa: PLR0912
     *,
+    descriptor: ProviderEndpointDescriptor,
     descriptor_path: Path,
+    descriptor_status: os.stat_result,
     discovery_directory: Path,
-    provider_instance_id: UUID,
-    endpoint_generation: int,
-    socket_path: Path,
 ) -> None:
-    """Bind descriptor and socket names to the declared endpoint identity."""
+    """Validate filesystem security and bind names to endpoint identity."""
+    descriptor_mode = stat.S_IMODE(descriptor_status.st_mode)
+    if descriptor_mode != _DESCRIPTOR_MODE:
+        raise ProviderDescriptorError(
+            f"Provider descriptor mode must be {_DESCRIPTOR_MODE:#05o}, "
+            f"found {descriptor_mode:#05o}: {descriptor_path}"
+        )
+
     if not discovery_directory.is_absolute():
         raise ProviderDescriptorError(
             "Provider discovery_directory must be absolute"
+        )
+    try:
+        directory_status = discovery_directory.lstat()
+    except OSError as error:
+        raise ProviderDescriptorError(
+            "Cannot inspect Provider discovery directory "
+            f"{discovery_directory}: {error}"
+        ) from error
+    if stat.S_ISLNK(directory_status.st_mode):
+        raise ProviderDescriptorError(
+            "Provider discovery directory must not be a symbolic link: "
+            f"{discovery_directory}"
+        )
+    if not stat.S_ISDIR(directory_status.st_mode):
+        raise ProviderDescriptorError(
+            "Provider discovery path is not a directory: "
+            f"{discovery_directory}"
+        )
+    if descriptor_status.st_gid != directory_status.st_gid:
+        raise ProviderDescriptorError(
+            "Provider descriptor group must match the discovery directory: "
+            f"{descriptor_path}"
         )
     if descriptor_path.parent != discovery_directory:
         raise ProviderDescriptorError(
@@ -304,13 +275,14 @@ def _validate_paths(
         )
 
     expected_descriptor_name = (
-        f"{provider_instance_id}{PROVIDER_DESCRIPTOR_SUFFIX}"
+        f"{descriptor.provider_instance_id}{PROVIDER_DESCRIPTOR_SUFFIX}"
     )
     if descriptor_path.name != expected_descriptor_name:
         raise ProviderDescriptorError(
             f"Provider descriptor filename must be {expected_descriptor_name}"
         )
 
+    socket_path = descriptor.socket_path
     if not socket_path.is_absolute():
         raise ProviderDescriptorError("Provider socket_path must be absolute")
     if socket_path.parent != discovery_directory:
@@ -319,19 +291,15 @@ def _validate_paths(
             "directory"
         )
 
-    expected_socket_name = f"{provider_instance_id}.{endpoint_generation}.sock"
+    expected_socket_name = (
+        f"{descriptor.provider_instance_id}."
+        f"{descriptor.endpoint_generation}.sock"
+    )
     if socket_path.name != expected_socket_name:
         raise ProviderDescriptorError(
             f"Provider socket filename must be {expected_socket_name}"
         )
 
-
-def _validate_socket(
-    *,
-    socket_path: Path,
-    descriptor_status: os.stat_result,
-) -> None:
-    """Bind a descriptor to an existing protected Unix-domain socket."""
     try:
         socket_status = socket_path.lstat()
     except FileNotFoundError as error:

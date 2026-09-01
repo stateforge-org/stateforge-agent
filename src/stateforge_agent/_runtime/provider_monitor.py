@@ -24,6 +24,13 @@ _WATCH_DEBOUNCE_MILLISECONDS = 100
 _WATCH_STEP_MILLISECONDS = 25
 _WATCH_TIMEOUT_MILLISECONDS = 1_000
 _POLL_DELAY_MILLISECONDS = 300
+_ENTRY_TYPES = {
+    stat.S_IFREG: "file",
+    stat.S_IFSOCK: "socket",
+    stat.S_IFDIR: "directory",
+    stat.S_IFLNK: "symlink",
+    stat.S_IFIFO: "fifo",
+}
 
 
 class ProviderDirectoryError(RuntimeError):
@@ -230,7 +237,10 @@ class ProviderDirectoryMonitor:
 
             entries[path.name] = ProviderDirectoryEntry(
                 path=path,
-                entry_type=_entry_type(entry_status.st_mode),
+                entry_type=_ENTRY_TYPES.get(
+                    stat.S_IFMT(entry_status.st_mode),
+                    "other",
+                ),
                 device=entry_status.st_dev,
                 inode=entry_status.st_ino,
                 mode=stat.S_IMODE(entry_status.st_mode),
@@ -238,18 +248,3 @@ class ProviderDirectoryMonitor:
                 modified_nanoseconds=entry_status.st_mtime_ns,
             )
         return entries
-
-
-def _entry_type(mode: int) -> str:
-    """Return a stable human-readable filesystem entry type."""
-    if stat.S_ISREG(mode):
-        return "file"
-    if stat.S_ISSOCK(mode):
-        return "socket"
-    if stat.S_ISDIR(mode):
-        return "directory"
-    if stat.S_ISLNK(mode):
-        return "symlink"
-    if stat.S_ISFIFO(mode):
-        return "fifo"
-    return "other"

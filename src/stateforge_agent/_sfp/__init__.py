@@ -1,12 +1,14 @@
 """Agent-side StateForge Protocol session management."""
 
+from stateforge_agent._sfp.errors import (
+    SfpConnectionError,
+    SfpIncompatibleError,
+)
 from stateforge_agent._sfp.session import (
     ProviderConnectionState,
     ProviderConnectionStatus,
     ProviderSession,
     ProviderSessionManager,
-    SfpConnectionError,
-    SfpIncompatibleError,
 )
 from stateforge_agent._sfp.version import SfpVersion
 

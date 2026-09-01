@@ -12,14 +12,15 @@ from pathlib import Path
 from uuid import UUID
 
 import grpc
-from stateforge_protocol.sfp.bootstrap.v1 import (
-    bootstrap_pb2,
-    bootstrap_pb2_grpc,
-)
 
 from stateforge_agent._runtime.provider_descriptor import (
     ProviderEndpointDescriptor,
 )
+from stateforge_agent._sfp.errors import (
+    SfpConnectionError,
+    SfpIncompatibleError,
+)
+from stateforge_agent._sfp.handshake import perform_handshake
 from stateforge_agent._sfp.version import SfpVersion
 
 _UUID_VERSION = 4
@@ -28,14 +29,6 @@ _READY_CHANNEL_STATE = grpc.ChannelConnectivity.READY
 _JITTER_STEPS = 1_000_000
 
 ProviderDescriptorLoader = Callable[[UUID], ProviderEndpointDescriptor]
-
-
-class SfpConnectionError(RuntimeError):
-    """Report failure to establish or validate an SFP session."""
-
-
-class SfpIncompatibleError(SfpConnectionError):
-    """Report that Agent and Provider share no supported SFP version."""
 
 
 class ProviderConnectionState(StrEnum):
@@ -146,15 +139,34 @@ class ProviderSessionManager:
         descriptor: ProviderEndpointDescriptor,
     ) -> ProviderSession:
         """Immediately connect one endpoint and retry it after failure."""
-        accepted = await self._set_desired_descriptor(descriptor)
-        if not accepted:
+        async with self._lock:
+            if self._closed:
+                raise RuntimeError("Provider session manager is closed")
+            desired = self._desired_descriptors.get(
+                descriptor.provider_instance_id
+            )
+            descriptor_is_stale = (
+                desired is not None
+                and desired.endpoint_generation
+                > descriptor.endpoint_generation
+            )
+            if not descriptor_is_stale:
+                self._desired_descriptors[descriptor.provider_instance_id] = (
+                    descriptor
+                )
+            retry_task = self._retry_tasks.pop(
+                descriptor.provider_instance_id,
+                None,
+            )
+
+        if descriptor_is_stale:
             current_session = self.get(descriptor.provider_instance_id)
             if current_session is not None:
                 return current_session
             raise SfpConnectionError(
                 "Provider descriptor endpoint generation is stale"
             )
-        await self._cancel_retry(descriptor.provider_instance_id)
+        await _cancel_task(retry_task)
         try:
             return await self._establish_once(descriptor)
         except SfpIncompatibleError:
@@ -175,9 +187,7 @@ class ProviderSessionManager:
         if attempt is None:
             raise RuntimeError("Connection attempt was not initialized")
 
-        channel = grpc.aio.insecure_channel(
-            _unix_channel_target(descriptor.socket_path)
-        )
+        channel = grpc.aio.insecure_channel(f"unix:{descriptor.socket_path}")
         try:
             candidate = await self._connect_candidate(
                 channel=channel,
@@ -186,7 +196,15 @@ class ProviderSessionManager:
             )
             if candidate is None:
                 await channel.close()
-                return await self._resolve_superseded(descriptor)
+                async with self._lock:
+                    surviving_session = self._sessions.get(
+                        descriptor.provider_instance_id
+                    )
+                if surviving_session is None:
+                    raise SfpConnectionError(
+                        "Provider connection attempt was superseded or removed"
+                    )
+                return surviving_session
             (
                 result,
                 replaced_session,
@@ -198,14 +216,53 @@ class ProviderSessionManager:
             )
         except BaseException:
             await channel.close()
-            await self._fail_attempt(descriptor, attempt)
+            async with self._lock:
+                if (
+                    self._attempts.get(descriptor.provider_instance_id)
+                    is attempt
+                ):
+                    self._attempts.pop(
+                        descriptor.provider_instance_id,
+                        None,
+                    )
+                    current_session = self._sessions.get(
+                        descriptor.provider_instance_id
+                    )
+                    if current_session is None:
+                        self._statuses[descriptor.provider_instance_id] = (
+                            ProviderConnectionStatus(
+                                provider_instance_id=(
+                                    descriptor.provider_instance_id
+                                ),
+                                state=ProviderConnectionState.UNAVAILABLE,
+                                active_endpoint_generation=None,
+                                candidate_endpoint_generation=None,
+                            )
+                        )
+                    else:
+                        self._statuses[descriptor.provider_instance_id] = (
+                            _available_status(current_session)
+                        )
             raise
 
         if not candidate_was_promoted:
             await channel.close()
         replaced_watcher: asyncio.Task[None] | None = None
         if candidate_was_promoted:
-            replaced_watcher = await self._start_watcher(result)
+            async with self._lock:
+                if self._sessions.get(result.provider_instance_id) is result:
+                    replaced_watcher = self._watchers.get(
+                        result.provider_instance_id
+                    )
+                    self._watchers[result.provider_instance_id] = (
+                        asyncio.create_task(
+                            self._watch_session(result),
+                            name=(
+                                "stateforge-sfp-channel-"
+                                f"{result.provider_instance_id}"
+                            ),
+                        )
+                    )
         await _cancel_task(replaced_watcher)
         if replaced_session is not None:
             await replaced_session._channel.close()
@@ -233,22 +290,22 @@ class ProviderSessionManager:
         if not await self._mark_handshaking(descriptor, attempt):
             return None
 
-        try:
-            response = await self._perform_handshake(channel, descriptor)
-        except grpc.aio.AioRpcError as error:
-            if error.code() is grpc.StatusCode.UNIMPLEMENTED:
-                raise SfpIncompatibleError(
-                    "Provider and Agent share no supported SFP wire version"
-                ) from error
-            raise SfpConnectionError(
-                "Provider handshake failed: "
-                f"status={error.code().name} details={error.details()}"
-            ) from error
-        return _validated_session(
-            descriptor=descriptor,
-            response=response,
-            offered_versions=self._supported_sfp_versions,
-            channel=channel,
+        result = await perform_handshake(
+            channel,
+            descriptor,
+            agent_runtime_id=self._agent_runtime_id,
+            agent_software_version=self._agent_software_version,
+            supported_sfp_versions=self._supported_sfp_versions,
+            timeout_seconds=self._handshake_timeout_seconds,
+        )
+        return ProviderSession(
+            provider_instance_id=descriptor.provider_instance_id,
+            endpoint_generation=descriptor.endpoint_generation,
+            socket_path=descriptor.socket_path,
+            selected_sfp_version=result.selected_sfp_version,
+            provider_runtime_id=result.provider_runtime_id,
+            session_id=result.session_id,
+            _channel=channel,
         )
 
     async def _promote_candidate(
@@ -348,34 +405,6 @@ class ProviderSessionManager:
             await asyncio.gather(*watchers, return_exceptions=True)
         for session in sessions:
             await session._channel.close()
-
-    async def _set_desired_descriptor(
-        self,
-        descriptor: ProviderEndpointDescriptor,
-    ) -> bool:
-        """Record the latest endpoint generation requested by discovery."""
-        async with self._lock:
-            if self._closed:
-                raise RuntimeError("Provider session manager is closed")
-            current = self._desired_descriptors.get(
-                descriptor.provider_instance_id
-            )
-            if (
-                current is not None
-                and current.endpoint_generation
-                > descriptor.endpoint_generation
-            ):
-                return False
-            self._desired_descriptors[descriptor.provider_instance_id] = (
-                descriptor
-            )
-            return True
-
-    async def _cancel_retry(self, provider_instance_id: UUID) -> None:
-        """Cancel any delayed attempt superseded by an immediate event."""
-        async with self._lock:
-            retry_task = self._retry_tasks.pop(provider_instance_id, None)
-        await _cancel_task(retry_task)
 
     async def _schedule_retry(self, provider_instance_id: UUID) -> None:
         """Ensure exactly one bounded retry loop exists for a Provider."""
@@ -541,23 +570,6 @@ class ProviderSessionManager:
                 )
             )
 
-    async def _start_watcher(
-        self,
-        session: ProviderSession,
-    ) -> asyncio.Task[None] | None:
-        """Attach a loss detector to the currently promoted session."""
-        async with self._lock:
-            if self._sessions.get(session.provider_instance_id) is not session:
-                return None
-            replaced_watcher = self._watchers.get(session.provider_instance_id)
-            self._watchers[session.provider_instance_id] = asyncio.create_task(
-                self._watch_session(session),
-                name=(
-                    f"stateforge-sfp-channel-{session.provider_instance_id}"
-                ),
-            )
-            return replaced_watcher
-
     async def _watch_session(self, session: ProviderSession) -> None:
         """Invalidate one exact session when its gRPC channel is lost."""
         try:
@@ -691,144 +703,6 @@ class ProviderSessionManager:
             )
             return True
 
-    async def _fail_attempt(
-        self,
-        descriptor: ProviderEndpointDescriptor,
-        attempt: object,
-    ) -> None:
-        """Finish only the matching failed attempt and preserve old service."""
-        async with self._lock:
-            if (
-                self._attempts.get(descriptor.provider_instance_id)
-                is not attempt
-            ):
-                return
-            self._attempts.pop(descriptor.provider_instance_id, None)
-            current_session = self._sessions.get(
-                descriptor.provider_instance_id
-            )
-            if current_session is None:
-                self._statuses[descriptor.provider_instance_id] = (
-                    ProviderConnectionStatus(
-                        provider_instance_id=descriptor.provider_instance_id,
-                        state=ProviderConnectionState.UNAVAILABLE,
-                        active_endpoint_generation=None,
-                        candidate_endpoint_generation=None,
-                    )
-                )
-            else:
-                self._statuses[descriptor.provider_instance_id] = (
-                    _available_status(current_session)
-                )
-
-    async def _resolve_superseded(
-        self,
-        descriptor: ProviderEndpointDescriptor,
-    ) -> ProviderSession:
-        """Return the surviving session or report a removed attempt."""
-        async with self._lock:
-            current_session = self._sessions.get(
-                descriptor.provider_instance_id
-            )
-        if current_session is None:
-            raise SfpConnectionError(
-                "Provider connection attempt was superseded or removed"
-            )
-        return current_session
-
-    async def _perform_handshake(
-        self,
-        channel: grpc.aio.Channel,
-        descriptor: ProviderEndpointDescriptor,
-    ) -> bootstrap_pb2.HandshakeResponse:
-        """Submit the stable bootstrap request over a provisional channel."""
-        stub = bootstrap_pb2_grpc.BootstrapServiceStub(channel)
-        request = bootstrap_pb2.HandshakeRequest(
-            agent_runtime=bootstrap_pb2.AgentRuntime(
-                runtime_id=str(self._agent_runtime_id),
-                software_version=self._agent_software_version,
-            ),
-            expected_provider_instance_id=str(descriptor.provider_instance_id),
-            expected_endpoint_generation=descriptor.endpoint_generation,
-            supported_sfp_versions=[
-                bootstrap_pb2.ProtocolVersion(
-                    major=version.major,
-                    minor=version.minor,
-                )
-                for version in self._supported_sfp_versions
-            ],
-        )
-        return await stub.Handshake(
-            request,
-            timeout=self._handshake_timeout_seconds,
-        )
-
-
-def _validated_session(
-    *,
-    descriptor: ProviderEndpointDescriptor,
-    response: bootstrap_pb2.HandshakeResponse,
-    offered_versions: tuple[SfpVersion, ...],
-    channel: grpc.aio.Channel,
-) -> ProviderSession:
-    """Validate a handshake response before exposing its channel."""
-    if response.provider_instance_id != str(descriptor.provider_instance_id):
-        raise SfpConnectionError(
-            "Handshake returned a different Provider instance identity"
-        )
-    if response.endpoint_generation != descriptor.endpoint_generation:
-        raise SfpConnectionError(
-            "Handshake returned a different endpoint generation"
-        )
-    if not response.HasField("selected_sfp_version"):
-        raise SfpConnectionError("Handshake did not select an SFP version")
-    try:
-        selected_version = SfpVersion(
-            major=response.selected_sfp_version.major,
-            minor=response.selected_sfp_version.minor,
-        )
-    except ValueError as error:
-        raise SfpConnectionError(
-            "Handshake selected an invalid SFP version"
-        ) from error
-    if selected_version not in offered_versions:
-        raise SfpConnectionError(
-            "Handshake selected an SFP version the Agent did not offer"
-        )
-
-    provider_runtime_id = _canonical_uuid4(
-        response.provider_runtime_id,
-        field_name="provider_runtime_id",
-    )
-    session_id = _canonical_uuid4(
-        response.session_id,
-        field_name="session_id",
-    )
-    return ProviderSession(
-        provider_instance_id=descriptor.provider_instance_id,
-        endpoint_generation=descriptor.endpoint_generation,
-        socket_path=descriptor.socket_path,
-        selected_sfp_version=selected_version,
-        provider_runtime_id=provider_runtime_id,
-        session_id=session_id,
-        _channel=channel,
-    )
-
-
-def _canonical_uuid4(value: str, *, field_name: str) -> UUID:
-    """Parse one canonical lowercase UUIDv4 response field."""
-    try:
-        identifier = UUID(value)
-    except ValueError as error:
-        raise SfpConnectionError(
-            f"Handshake {field_name} must be a canonical UUIDv4"
-        ) from error
-    if identifier.version != _UUID_VERSION or str(identifier) != value:
-        raise SfpConnectionError(
-            f"Handshake {field_name} must be a canonical UUIDv4"
-        )
-    return identifier
-
 
 def _matches(
     session: ProviderSession,
@@ -857,8 +731,3 @@ async def _cancel_task(task: asyncio.Task[None] | None) -> None:
         return
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
-
-
-def _unix_channel_target(path: Path) -> str:
-    """Build the gRPC target for an absolute Unix domain socket."""
-    return f"unix:{path}"
