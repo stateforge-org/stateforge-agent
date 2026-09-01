@@ -10,7 +10,6 @@ User=stateforge-agent
 Group=stateforge-agent
 WorkingDirectory=/var/lib/stateforge-agent
 ExecStart=/usr/bin/stateforge-agent run --config /etc/stateforge-agent/config.toml
-ExecReload=/usr/bin/stateforge-agent reload --socket /run/stateforge-agent/control.sock
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=90s

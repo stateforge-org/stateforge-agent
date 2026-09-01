@@ -50,6 +50,7 @@ stateforge-agent = "stateforge_agent.cli:main"
 
 [dependency-groups]
 dev = [
+    "build>=1.2,<2",
     "mypy>=1.17",
     "pytest>=8.4",
     "pytest-asyncio>=1",
@@ -67,6 +68,19 @@ docs = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stateforge_agent"]
+
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/LICENSE",
+    "/README.md",
+    "/docs",
+    "/mkdocs.yml",
+    "/packaging",
+    "/pyproject.toml",
+    "/src",
+    "/tests",
+]
 
 
 [tool.ruff]
@@ -140,7 +154,7 @@ known-first-party = ["stateforge_agent"]
 
 
 [tool.ruff.lint.pydocstyle]
-convention = "pep257"
+convention = "google"
 
 
 [tool.ruff.format]
