@@ -110,6 +110,7 @@ select = [
     "A",
     "ASYNC",
     "B",
+    "C90",
     "C4",
     "F",
     "I",
@@ -151,6 +152,10 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["stateforge_agent"]
+
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
 
 
 [tool.ruff.lint.pydocstyle]

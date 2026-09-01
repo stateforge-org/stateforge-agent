@@ -221,7 +221,7 @@ def _reject_duplicate_fields(
 
 
 # Keep the complete filesystem trust boundary visible in one place.
-def _validate_endpoint_files(  # noqa: PLR0912
+def _validate_endpoint_files(  # noqa: C901, PLR0912
     *,
     descriptor: ProviderEndpointDescriptor,
     descriptor_path: Path,
