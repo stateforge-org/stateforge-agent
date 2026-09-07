@@ -1,0 +1,28 @@
+# StateForge Agent system configuration.
+#
+# Local overrides may be placed in /etc/stateforge-agent/conf.d/. Do not store
+# secrets directly in this file; refer to protected credential files instead.
+# Backup Engines are selected per operation by Control Plane policy and are not
+# selected globally in the Agent configuration.
+
+schema_version = 1
+
+[control_plane]
+# The Agent will not start until this value is configured.
+url = ""
+ca_certificate = "/etc/pki/tls/certs/ca-bundle.crt"
+connect_timeout_seconds = 10
+request_timeout_seconds = 30
+
+[providers]
+health_interval_seconds = 15
+reconnect_initial_delay_seconds = 1
+reconnect_max_delay_seconds = 30
+
+[journal]
+backend = "sqlite"
+
+[logging]
+level = "info"
+format = "text"
+destination = "stderr"

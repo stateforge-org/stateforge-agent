@@ -1,0 +1,4 @@
+# Type Name                  ID  GECOS               Home directory              Shell
+g      stateforge-providers  -
+u      stateforge-agent      -   "StateForge Agent"  /var/lib/stateforge-agent  /usr/sbin/nologin
+m      stateforge-agent      stateforge-providers

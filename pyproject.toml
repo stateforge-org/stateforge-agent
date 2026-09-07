@@ -1,0 +1,208 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+
+[project]
+name = "stateforge-agent"
+version = "0.1.0"
+description = "Secure execution agent for the StateForge platform."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+
+authors = [
+    { name = "StateForge" },
+]
+
+keywords = [
+    "ai",
+    "mlops",
+    "backup",
+    "disaster-recovery",
+    "automation",
+    "stateforge",
+]
+
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "grpcio>=1.83",
+    "stateforge-protocol>=0.1.0,<0.2.0",
+    "watchfiles>=1.2,<2",
+]
+
+
+[project.scripts]
+stateforge-agent = "stateforge_agent.cli:main"
+
+
+[dependency-groups]
+dev = [
+    "build>=1.2,<2",
+    "mypy>=1.17",
+    "pytest>=8.4",
+    "pytest-asyncio>=1",
+    "pytest-cov>=6.2",
+    "ruff>=0.12",
+    "types-grpcio",
+    "types-protobuf",
+]
+docs = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.6,<10",
+    "mkdocstrings[python]>=0.30,<1",
+]
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stateforge_agent"]
+
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/LICENSE",
+    "/README.md",
+    "/docs",
+    "/mkdocs.yml",
+    "/packaging",
+    "/pyproject.toml",
+    "/src",
+    "/tests",
+]
+
+
+[tool.ruff]
+target-version = "py311"
+
+# PEP 8 recommends a maximum of 79 characters for code.
+line-length = 79
+
+src = ["src", "tests"]
+
+
+[tool.ruff.lint]
+select = [
+    # PEP 8
+    "E",
+    "W",
+    "N",
+
+    # PEP 257
+    "D",
+    "D401",
+
+    # PEP 484
+    "ANN",
+
+    # General correctness and maintainability
+    "A",
+    "ASYNC",
+    "B",
+    "C90",
+    "C4",
+    "F",
+    "I",
+    "PERF",
+    "PIE",
+    "PL",
+    "RUF",
+    "S",
+    "SIM",
+    "T20",
+    "UP",
+]
+
+ignore = [
+    # Allow typing.Any where genuinely required.
+    "ANN401",
+
+    # Do not impose an arbitrary argument-count limit.
+    "PLR0913",
+
+    # Ruff formatter compatibility.
+    "W191",
+    "E111",
+    "E114",
+    "E117",
+    "D203",
+    "D206",
+    "D300",
+]
+
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "ANN",
+    "D",
+    "S101",
+]
+
+
+[tool.ruff.lint.isort]
+known-first-party = ["stateforge_agent"]
+
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+
+[tool.ruff.format]
+indent-style = "space"
+quote-style = "double"
+line-ending = "auto"
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+packages = ["stateforge_agent"]
+pretty = true
+show_error_codes = true
+warn_unreachable = true
+warn_unused_configs = true
+
+
+[tool.pytest.ini_options]
+minversion = "8.4"
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--cov=stateforge_agent",
+    "--cov-report=term-missing",
+]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+
+
+[tool.coverage.run]
+branch = true
+source = ["stateforge_agent"]
+
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+
+exclude_lines = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
