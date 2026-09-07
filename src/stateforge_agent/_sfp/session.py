@@ -25,7 +25,10 @@ from stateforge_agent._sfp.version import SfpVersion
 
 _UUID_VERSION = 4
 _LOGGER = logging.getLogger(__name__)
-_READY_CHANNEL_STATE = grpc.ChannelConnectivity.READY
+_FAILED_CHANNEL_STATES = {
+    grpc.ChannelConnectivity.TRANSIENT_FAILURE,
+    grpc.ChannelConnectivity.SHUTDOWN,
+}
 _JITTER_STEPS = 1_000_000
 
 ProviderDescriptorLoader = Callable[[UUID], ProviderEndpointDescriptor]
@@ -595,7 +598,14 @@ class ProviderSessionManager:
     async def _watch_session(self, session: ProviderSession) -> None:
         """Invalidate one exact session when its gRPC channel is lost."""
         try:
-            await session._channel.wait_for_state_change(_READY_CHANNEL_STATE)
+            state = session._channel.get_state(try_to_connect=False)
+            while state not in _FAILED_CHANNEL_STATES:
+                if state is grpc.ChannelConnectivity.IDLE:
+                    state = session._channel.get_state(try_to_connect=True)
+                    if state in _FAILED_CHANNEL_STATES:
+                        break
+                await session._channel.wait_for_state_change(state)
+                state = session._channel.get_state(try_to_connect=False)
         except asyncio.CancelledError:
             raise
         except Exception:

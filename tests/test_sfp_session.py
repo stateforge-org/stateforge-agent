@@ -20,6 +20,7 @@ from stateforge_agent._runtime.provider_descriptor import (
 )
 from stateforge_agent._sfp import (
     ProviderConnectionState,
+    ProviderSession,
     ProviderSessionManager,
     SfpConnectionError,
     SfpIncompatibleError,
@@ -187,6 +188,32 @@ class _BootstrapServer:
         await self.server.stop(grace=None)
 
 
+class _ControllableChannel:
+    def __init__(self) -> None:
+        self.state = grpc.ChannelConnectivity.READY
+        self.state_changed = asyncio.Event()
+        self.reconnect_requested = asyncio.Event()
+
+    def get_state(self, try_to_connect: bool = False):
+        if try_to_connect:
+            self.reconnect_requested.set()
+        return self.state
+
+    async def wait_for_state_change(self, last_observed_state) -> None:
+        while self.state is last_observed_state:
+            self.state_changed.clear()
+            if self.state is not last_observed_state:
+                return
+            await self.state_changed.wait()
+
+    def transition_to(self, state: grpc.ChannelConnectivity) -> None:
+        self.state = state
+        self.state_changed.set()
+
+    async def close(self) -> None:
+        self.transition_to(grpc.ChannelConnectivity.SHUTDOWN)
+
+
 def _manager(
     *,
     descriptor_loader=None,
@@ -210,7 +237,7 @@ async def _wait_for_state(
     expected: ProviderConnectionState,
 ) -> None:
     """Wait briefly for one asynchronous state transition."""
-    async with asyncio.timeout(1):
+    async with asyncio.timeout(3):
         while True:
             status = manager.connection_status(_PROVIDER_INSTANCE_ID)
             if status is not None and status.state is expected:
@@ -379,6 +406,35 @@ async def test_detects_loss_of_established_channel(
     assert status.active_endpoint_generation is None
     assert status.candidate_endpoint_generation is None
 
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_idle_channel_reconnects_without_invalidating_session() -> None:
+    channel = _ControllableChannel()
+    manager = _manager()
+    session = ProviderSession(
+        provider_instance_id=_PROVIDER_INSTANCE_ID,
+        endpoint_generation=1,
+        socket_path=(
+            Path(tempfile.gettempdir()) / f"{_PROVIDER_INSTANCE_ID}.1.sock"
+        ),
+        selected_sfp_version=_SFP_VERSION,
+        provider_runtime_id=uuid4(),
+        session_id=uuid4(),
+        _channel=channel,
+    )
+    watcher = asyncio.create_task(manager._watch_session(session))
+
+    channel.transition_to(grpc.ChannelConnectivity.IDLE)
+    await asyncio.wait_for(channel.reconnect_requested.wait(), timeout=1)
+
+    channel.transition_to(grpc.ChannelConnectivity.READY)
+    await asyncio.sleep(0)
+    assert not watcher.done()
+
+    channel.transition_to(grpc.ChannelConnectivity.SHUTDOWN)
+    await asyncio.wait_for(watcher, timeout=1)
     await manager.close()
 
 

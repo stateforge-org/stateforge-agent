@@ -171,19 +171,6 @@ async def test_watch_reconciles_existing_descriptor_before_waiting(
     assert discovered[0].entry.path == descriptor
 
 
-def test_only_relevant_raw_changes_wake_reconciliation(
-    tmp_path: Path,
-) -> None:
-    monitor = ProviderDirectoryMonitor(tmp_path)
-    descriptor = _descriptor_path(tmp_path)
-
-    assert monitor._contains_relevant_change({(2, str(tmp_path))})
-    assert monitor._contains_relevant_change({(1, str(descriptor))})
-    assert not monitor._contains_relevant_change(
-        {(1, str(tmp_path / "unrelated.tmp"))}
-    )
-
-
 def test_ignores_entries_that_are_not_sfp_descriptors(tmp_path: Path) -> None:
     monitor = ProviderDirectoryMonitor(tmp_path)
     monitor.prepare()

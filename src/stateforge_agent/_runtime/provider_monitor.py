@@ -10,10 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from watchfiles._rust_notify import (
-    RustNotify,
-    WatchfilesRustInternalError,
-)
+from watchfiles import awatch
 
 from stateforge_agent._runtime.provider_descriptor import (
     PROVIDER_DESCRIPTOR_SUFFIX,
@@ -142,73 +139,34 @@ class ProviderDirectoryMonitor:
         self,
         stop_event: asyncio.Event,
     ) -> AsyncIterator[tuple[ProviderDirectoryEvent, ...]]:
-        """Yield reconciled changes after native filesystem notifications."""
-        watcher = self._create_watcher()
+        """Yield changes from notifications and periodic reconciliation."""
+        initial_events = self.scan()
+        if initial_events:
+            yield initial_events
+
         try:
-            initial_events = self.scan()
-            if initial_events:
-                yield initial_events
-
-            while not stop_event.is_set():
-                try:
-                    changes = await asyncio.to_thread(
-                        watcher.watch,
-                        _WATCH_DEBOUNCE_MILLISECONDS,
-                        _WATCH_STEP_MILLISECONDS,
-                        _WATCH_TIMEOUT_MILLISECONDS,
-                        stop_event,
-                    )
-                except WatchfilesRustInternalError as error:
-                    raise ProviderDirectoryError(
-                        "Provider discovery filesystem watcher failed for "
-                        f"{self.directory}: {error}"
-                    ) from error
-
-                if isinstance(changes, str):
-                    if changes in {"signal", "stop"}:
-                        break
-                    continue
-                if not self._contains_relevant_change(changes):
-                    continue
-
-                events = self.scan()
-                if events:
-                    yield events
-        finally:
-            watcher.close()
-
-    def _create_watcher(self) -> RustNotify:
-        """Start the native watcher before the initial reconciliation scan."""
-        try:
-            return RustNotify(
-                watch_paths=[str(self.directory)],
-                debug=False,
+            async for _ in awatch(
+                self.directory,
+                debounce=_WATCH_DEBOUNCE_MILLISECONDS,
+                step=_WATCH_STEP_MILLISECONDS,
+                stop_event=stop_event,
+                rust_timeout=_WATCH_TIMEOUT_MILLISECONDS,
+                yield_on_timeout=True,
                 force_polling=False,
                 poll_delay_ms=_POLL_DELAY_MILLISECONDS,
                 recursive=False,
                 ignore_permission_denied=False,
-            )
-        except (OSError, WatchfilesRustInternalError) as error:
+            ):
+                events = self.scan()
+                if events:
+                    yield events
+        except ProviderDirectoryError:
+            raise
+        except (OSError, RuntimeError) as error:
             raise ProviderDirectoryError(
-                "Cannot watch Provider discovery directory "
+                "Provider discovery filesystem watcher failed for "
                 f"{self.directory}: {error}"
             ) from error
-
-    def _contains_relevant_change(
-        self,
-        changes: set[tuple[int, str]],
-    ) -> bool:
-        """Return whether raw notifications can affect discovery state."""
-        for _, changed_path_value in changes:
-            changed_path = Path(changed_path_value)
-            if changed_path == self.directory:
-                return True
-            if (
-                changed_path.parent == self.directory
-                and changed_path.name.endswith(PROVIDER_DESCRIPTOR_SUFFIX)
-            ):
-                return True
-        return False
 
     def _read_entries(self) -> dict[str, ProviderDirectoryEntry]:
         """Build one complete non-following filesystem snapshot."""
