@@ -1,3 +1,16 @@
+# StateForge Agent delivery workflow
+
+Before planning, reviewing, or changing this repository, read `CLAUDE.md`,
+root `STATEFORGE_DPT.md`, and
+`.agents/skills/stateforge-dpt-milestone/SKILL.md`, followed by the applicable
+engineering skills under `.claude/skills/`.
+
+Implement only the specifically requested Issue's milestone. Local commits
+are allowed; humans own pushing, opening the PR, formal review, and merging.
+Do not maintain an implementation ledger or modify the generated DPT file.
+The handoff is "implementation ready for human PR/review", not "step completed".
+GitHub merge evidence, reconciled by DPT, determines delivery completion.
+
 # StateForge Python Engineering Rules
 
 These rules apply to every change in this repository. Follow the explicit
@@ -42,4 +55,3 @@ PEP 257, PEP 484, and the Python Guide.
 - Build MkDocs with `--strict` after documentation or public API changes.
 - Do not report completion until every applicable configured check passes, or
   clearly identify a check that could not run.
-
