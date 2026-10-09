@@ -1,8 +1,8 @@
 %global import_name stateforge_agent
 
-# CI/CD supplies this macro from the validated release version. Keep a fallback
-# so local and source builds remain usable without CI-specific tooling.
-%{!?version:%global version 0.1.0}
+# The repository build command reads this macro from pyproject.toml. Refuse a
+# direct build without it so RPM and Python distribution versions cannot drift.
+%{!?version:%{error:The version macro must be defined from pyproject.toml}}
 
 # RHEL 9's default Python is older than the project's Python 3.11 minimum.
 # Use the supported Python 3.11 stack there; Fedora and newer RHEL releases

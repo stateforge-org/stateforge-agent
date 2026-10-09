@@ -1,0 +1,73 @@
+name: Test an invalid Provider descriptor
+description: Verify that the RPM-installed Agent rejects malformed discovery data.
+
+inputs:
+  repository-token:
+    description: Short-lived token for unpublished dependency repositories.
+    required: true
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario's evidence.
+    required: false
+    default: dist/agent-system-test-evidence/invalid-descriptor
+  provider-ref:
+    description: Provider revision used to build the fixture wheel.
+    required: false
+    default: mvp/implementation
+  protocol-ref:
+    description: Protocol revision shared by the Agent and Provider.
+    required: false
+    default: mvp/implementation
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare installed Agent
+      id: setup
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        repository-token: ${{ inputs.repository-token }}
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+        provider-ref: ${{ inputs.provider-ref }}
+        protocol-ref: ${{ inputs.protocol-ref }}
+
+    - name: Publish malformed discovery data
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        mkdir -p "${EVIDENCE_DIRECTORY}"
+        provider_id="$(docker exec "${CONTAINER_NAME}" \
+          python3 -c 'import uuid; print(uuid.uuid4())')"
+        descriptor="/run/stateforge-agent/providers/${provider_id}.sfp.json"
+        docker exec "${CONTAINER_NAME}" bash -c \
+          'umask 0027; printf "{" > "$1"' -- "${descriptor}"
+
+        deadline=$((SECONDS + 60))
+        while (( SECONDS < deadline )); do
+          journal="$(docker exec "${CONTAINER_NAME}" \
+            journalctl -u stateforge-agent.service --no-pager -o cat)"
+          if grep -F 'Ignoring invalid Provider endpoint descriptor:' \
+            <<< "${journal}" | grep -Fq "path=${descriptor}"; then
+            printf 'Rejected malformed descriptor %s.\n' "${descriptor}" \
+              > "${EVIDENCE_DIRECTORY}/invalid-descriptor-assertion.txt"
+            docker exec "${CONTAINER_NAME}" \
+              systemctl is-active --quiet stateforge-agent.service
+            exit 0
+          fi
+          sleep 1
+        done
+        printf 'Agent did not reject malformed descriptor %s.\n' \
+          "${descriptor}" >&2
+        exit 1
+
+    - name: Preserve evidence and clean up
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        evidence-directory: ${{ inputs.evidence-directory }}

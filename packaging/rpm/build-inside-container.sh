@@ -94,7 +94,7 @@ main() {
     local version source_directory rpm_path source_rpm_path
 
     cd -- "${SOURCE_ROOT}"
-    version="${VERSION:-$(project_version)}"
+    version="$(project_version)"
     if [[ ! "${version}" =~ ^[0-9][0-9A-Za-z._+~]*$ ]]; then
         printf 'Version is not valid for an RPM: %s\n' "${version}" >&2
         exit 1

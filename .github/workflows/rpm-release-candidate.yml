@@ -3,11 +3,16 @@ name: RPM release candidate
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: Optional version override; normally read from pyproject.toml.
+      provider-ref:
+        description: Provider branch, tag, or commit SHA to test.
         required: false
         type: string
-        default: ""
+        default: mvp/implementation
+      protocol-ref:
+        description: Protocol branch, tag, or commit SHA to test.
+        required: false
+        type: string
+        default: mvp/implementation
       retention-days:
         description: Number of days to retain the tested candidate.
         required: false
@@ -26,8 +31,9 @@ jobs:
     name: Build and test release candidate
     uses: ./.github/workflows/rpm-build-and-test.yml
     with:
-      version: ${{ inputs.version }}
       artifact-name: stateforge-agent-rpm-candidate-${{ github.run_id }}
+      provider-ref: ${{ inputs.provider-ref }}
+      protocol-ref: ${{ inputs.protocol-ref }}
       retention-days: ${{ inputs.retention-days }}
     secrets:
       source_app_id: ${{ secrets.STATEFORGE_CI_APP_ID }}

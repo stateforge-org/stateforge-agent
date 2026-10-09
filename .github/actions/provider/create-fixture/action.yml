@@ -34,6 +34,9 @@ outputs:
   fixture-path:
     description: Absolute path to the staged Provider fixture.
     value: ${{ steps.stage.outputs.fixture-path }}
+  provenance-path:
+    description: Requested refs, resolved commits, and wheel hashes.
+    value: ${{ steps.stage.outputs.provenance-path }}
   wheel-directory:
     description: Absolute path containing Provider and Protocol wheels.
     value: ${{ steps.stage.outputs.wheel-directory }}
@@ -66,6 +69,10 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         FIXTURE: ${{ inputs.fixture }}
         OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+        PROVIDER_REF: ${{ inputs.provider-ref }}
+        PROVIDER_REPOSITORY: ${{ inputs.provider-repository }}
+        PROTOCOL_REF: ${{ inputs.protocol-ref }}
+        PROTOCOL_REPOSITORY: ${{ inputs.protocol-repository }}
       run: |
         fixture_source="${ACTION_PATH}/fixtures/${FIXTURE}.py"
         if [[ ! -f "${fixture_source}" ]]; then
@@ -79,6 +86,58 @@ runs:
           --wheel-dir "${OUTPUT_DIRECTORY}/wheels" \
           .stateforge-ci/sources/protocol \
           .stateforge-ci/sources/provider
+
+        mapfile -t protocol_wheels < <(
+          find "${OUTPUT_DIRECTORY}/wheels" -maxdepth 1 -type f \
+            -name 'stateforge_protocol-*.whl' -print
+        )
+        mapfile -t provider_wheels < <(
+          find "${OUTPUT_DIRECTORY}/wheels" -maxdepth 1 -type f \
+            -name 'stateforge_provider_implementation-*.whl' -print
+        )
+        if (( ${#protocol_wheels[@]} != 1 || ${#provider_wheels[@]} != 1 )); then
+          printf 'Expected one Protocol wheel and one Provider wheel.\n' >&2
+          exit 1
+        fi
+
+        protocol_commit="$(
+          git -C .stateforge-ci/sources/protocol rev-parse --verify HEAD
+        )"
+        provider_commit="$(
+          git -C .stateforge-ci/sources/provider rev-parse --verify HEAD
+        )"
+        protocol_sha256="$(sha256sum "${protocol_wheels[0]}" | cut -d ' ' -f 1)"
+        provider_sha256="$(sha256sum "${provider_wheels[0]}" | cut -d ' ' -f 1)"
+        jq -n \
+          --arg protocol_repository "${PROTOCOL_REPOSITORY}" \
+          --arg protocol_ref "${PROTOCOL_REF}" \
+          --arg protocol_commit "${protocol_commit}" \
+          --arg protocol_wheel "$(basename -- "${protocol_wheels[0]}")" \
+          --arg protocol_sha256 "${protocol_sha256}" \
+          --arg provider_repository "${PROVIDER_REPOSITORY}" \
+          --arg provider_ref "${PROVIDER_REF}" \
+          --arg provider_commit "${provider_commit}" \
+          --arg provider_wheel "$(basename -- "${provider_wheels[0]}")" \
+          --arg provider_sha256 "${provider_sha256}" \
+          '{
+            schema_version: 1,
+            dependencies: [
+              {
+                repository: $protocol_repository,
+                requested_ref: $protocol_ref,
+                resolved_commit: $protocol_commit,
+                wheel: $protocol_wheel,
+                wheel_sha256: $protocol_sha256
+              },
+              {
+                repository: $provider_repository,
+                requested_ref: $provider_ref,
+                resolved_commit: $provider_commit,
+                wheel: $provider_wheel,
+                wheel_sha256: $provider_sha256
+              }
+            ]
+          }' > "${OUTPUT_DIRECTORY}/dependency-provenance.json"
         install -m 0644 "${fixture_source}" \
           "${OUTPUT_DIRECTORY}/provider.py"
         (
@@ -89,5 +148,7 @@ runs:
         output_directory="$(cd -- "${OUTPUT_DIRECTORY}" && pwd -P)"
         {
           printf 'fixture-path=%s/provider.py\n' "${output_directory}"
+          printf 'provenance-path=%s/dependency-provenance.json\n' \
+            "${output_directory}"
           printf 'wheel-directory=%s/wheels\n' "${output_directory}"
         } >> "${GITHUB_OUTPUT}"

@@ -1,5 +1,5 @@
-name: Test installed StateForge Agent RPM
-description: Run the installed Agent service against a public-API Provider fixture.
+name: Prepare an installed-Agent scenario
+description: Build fixture packages, install the RPM, and start the packaged Agent.
 
 inputs:
   repository-token:
@@ -13,8 +13,12 @@ inputs:
     description: Directory receiving installed-system evidence.
     required: false
     default: dist/agent-system-test-evidence
+  fixture:
+    description: Provider fixture prepared for the scenario.
+    required: false
+    default: manifest
   provider-ref:
-    description: Provider revision used to build the dummy Provider wheel.
+    description: Provider revision used to build the fixture wheel.
     required: false
     default: mvp/implementation
   protocol-ref:
@@ -23,9 +27,15 @@ inputs:
     default: mvp/implementation
 
 outputs:
-  evidence-directory:
-    description: Absolute directory containing system-test evidence.
-    value: ${{ steps.evidence.outputs.evidence-directory }}
+  container-name:
+    description: Fedora container running the installed Agent.
+    value: ${{ steps.agent.outputs.container-name }}
+  fixture-path:
+    description: Prepared Provider fixture entry point.
+    value: ${{ steps.fixture.outputs.fixture-path }}
+  wheel-directory:
+    description: Directory containing the Provider and Protocol wheels.
+    value: ${{ steps.fixture.outputs.wheel-directory }}
 
 runs:
   using: composite
@@ -35,8 +45,19 @@ runs:
       uses: ./.github/actions/provider/create-fixture
       with:
         repository-token: ${{ inputs.repository-token }}
+        fixture: ${{ inputs.fixture }}
         provider-ref: ${{ inputs.provider-ref }}
         protocol-ref: ${{ inputs.protocol-ref }}
+
+    - name: Preserve dependency provenance
+      shell: bash
+      env:
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+        PROVENANCE_PATH: ${{ steps.fixture.outputs.provenance-path }}
+      run: |
+        mkdir -p "${EVIDENCE_DIRECTORY}"
+        install -m 0644 "${PROVENANCE_PATH}" \
+          "${EVIDENCE_DIRECTORY}/dependency-provenance.json"
 
     - name: Install Agent RPM
       id: agent
@@ -50,26 +71,3 @@ runs:
       uses: ./.github/actions/agent/start
       with:
         container-name: ${{ steps.agent.outputs.container-name }}
-
-    - name: Start Provider fixture
-      id: provider
-      uses: ./.github/actions/provider/start
-      with:
-        container-name: ${{ steps.agent.outputs.container-name }}
-        fixture-path: ${{ steps.fixture.outputs.fixture-path }}
-        wheel-directory: ${{ steps.fixture.outputs.wheel-directory }}
-
-    - name: Assert Provider manifest exchange
-      uses: ./.github/actions/provider/assert-manifest
-      with:
-        container-name: ${{ steps.agent.outputs.container-name }}
-        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
-        evidence-directory: ${{ inputs.evidence-directory }}
-
-    - name: Collect installed-system evidence
-      id: evidence
-      if: ${{ always() }}
-      uses: ./.github/actions/agent/collect-evidence
-      with:
-        container-name: stateforge-agent-system-test
-        evidence-directory: ${{ inputs.evidence-directory }}

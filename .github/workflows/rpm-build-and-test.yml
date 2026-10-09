@@ -3,11 +3,6 @@ name: RPM / Build and test
 on:
   workflow_call:
     inputs:
-      version:
-        description: Optional version override; defaults to pyproject.toml.
-        required: false
-        type: string
-        default: ""
       artifact-name:
         description: Name of the RPM artifact passed between jobs.
         required: false
@@ -53,7 +48,6 @@ jobs:
   build:
     uses: ./.github/workflows/rpm-build.yml
     with:
-      version: ${{ inputs.version }}
       artifact-name: ${{ inputs.artifact-name }}
       retention-days: ${{ inputs.retention-days }}
 

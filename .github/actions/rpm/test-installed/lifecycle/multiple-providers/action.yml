@@ -1,0 +1,87 @@
+name: Test multiple installed Providers
+description: Verify that the RPM-installed Agent accepts two independent Providers.
+
+inputs:
+  repository-token:
+    description: Short-lived token for unpublished dependency repositories.
+    required: true
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario's evidence.
+    required: false
+    default: dist/agent-system-test-evidence/multiple-providers
+  provider-ref:
+    description: Provider revision used to build the fixture wheel.
+    required: false
+    default: mvp/implementation
+  protocol-ref:
+    description: Protocol revision shared by the Agent and Providers.
+    required: false
+    default: mvp/implementation
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare installed Agent
+      id: setup
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        repository-token: ${{ inputs.repository-token }}
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+        provider-ref: ${{ inputs.provider-ref }}
+        protocol-ref: ${{ inputs.protocol-ref }}
+
+    - name: Start first Provider
+      id: provider-a
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: provider-a
+        provider-identity: stateforge.test.multiple.a
+
+    - name: Start second Provider
+      id: provider-b
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: provider-b
+        provider-identity: stateforge.test.multiple.b
+
+    - name: Assert first manifest
+      uses: ./.github/actions/provider/assert-manifest
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-a
+
+    - name: Assert second manifest
+      uses: ./.github/actions/provider/assert-manifest
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-b.outputs.provider-instance-id }}
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-b
+
+    - name: Assert independent Provider identities
+      shell: bash
+      env:
+        FIRST_PROVIDER: ${{ steps.provider-a.outputs.provider-instance-id }}
+        SECOND_PROVIDER: ${{ steps.provider-b.outputs.provider-instance-id }}
+      run: |
+        if [[ "${FIRST_PROVIDER}" == "${SECOND_PROVIDER}" ]]; then
+          printf 'Independent Providers reused one instance identity.\n' >&2
+          exit 1
+        fi
+
+    - name: Preserve evidence and clean up
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        evidence-directory: ${{ inputs.evidence-directory }}

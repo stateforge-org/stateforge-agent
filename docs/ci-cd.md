@@ -14,6 +14,16 @@ operation.
 │   ├── rpm/
 │   │   ├── build/
 │   │   └── test-installed/
+│   │       ├── setup/
+│   │       ├── cleanup/
+│   │       ├── smoke/
+│   │       │   └── manifest-exchange/
+│   │       ├── lifecycle/
+│   │       │   └── multiple-providers/
+│   │       ├── adversarial/
+│   │       │   └── invalid-descriptor/
+│   │       └── destructive/
+│   │           └── uninstall-reinstall/
 │   ├── agent/
 │   │   ├── install/
 │   │   ├── start/
@@ -47,9 +57,11 @@ then performs this sequence:
 5. Start the packaged `stateforge-agent.service` unit.
 6. Start a dummy Provider as a separate non-root systemd service.
 7. Wait for the Agent to accept that Provider's manifest.
-8. Capture bounded journals, process state, descriptors, package ownership,
+8. Prove the CLI, imported Python distribution, and RPM versions agree and
+   that RPM owns the imported module and distribution metadata.
+9. Capture bounded journals, process state, descriptors, package ownership,
    and package verification evidence.
-9. Stop services, uninstall the RPM, verify removal, and remove the container.
+10. Stop services, uninstall the RPM, verify removal, and remove the container.
 
 ```mermaid
 flowchart LR
@@ -84,17 +96,29 @@ Contents permission. The token is scoped to those two repositories, is not
 persisted by checkout, and expires automatically. A long-lived personal
 access token is neither required nor accepted by the workflow interface.
 
+The installed-system workflow currently runs four isolated scenarios:
+
+- smoke: one public-API Provider completes manifest exchange;
+- lifecycle: two independent Provider processes are accepted concurrently;
+- adversarial: malformed discovery data is rejected without stopping the Agent;
+- destructive: the exact RPM is removed, installed again in a clean environment,
+  and completes manifest exchange after reinstallation.
+
 For reproducible release-candidate runs, pass commit SHAs as `provider-ref`
 and `protocol-ref`. Integration CI defaults to each repository's
 `mvp/implementation` branch so it continuously tests the current integrated
-contract.
+contract. Every scenario retains `dependency-provenance.json`, which records
+both requested refs, the exact commits resolved by checkout, and the SHA-256
+digest of each generated wheel.
 
 ## Action responsibilities
 
 | Action | Responsibility |
 | --- | --- |
 | `rpm/build` | Build binary/source RPMs, checksums, and metadata. |
-| `rpm/test-installed` | Compose the complete installed Agent and Provider test. |
+| `rpm/test-installed/setup` | Prepare a clean RPM-installed Agent for one scenario. |
+| `rpm/test-installed/<tier>/<scenario>` | Run one isolated installed-system scenario and its assertions. |
+| `rpm/test-installed/cleanup` | Preserve evidence and remove the scenario environment. |
 | `agent/install` | Create clean Fedora, install the exact RPM and dependencies, and verify package ownership. |
 | `agent/start` | Start the packaged systemd unit and wait for an explicit readiness event. |
 | `agent/collect-evidence` | Capture bounded evidence, uninstall the RPM, and clean up. |
@@ -121,14 +145,29 @@ RPM, Docker, or systemd behavior.
 A publishing workflow must consume the artifact returned by
 `rpm-build-and-test.yml`. It must not rebuild the RPM after testing.
 
+## Adding an installed-system scenario
+
+Each independently runnable scenario is a composite action under
+`.github/actions/rpm/test-installed/<tier>/<scenario>/`. A scenario composes
+the shared `setup` and `cleanup` actions with only the Provider behavior and
+assertions that distinguish that case. The reusable workflow gives every
+scenario its own job and clean container, so one failure cannot contaminate a
+later scenario.
+
+Use one of the `smoke`, `lifecycle`, `adversarial`, or `destructive` tiers. A
+scenario action must always invoke cleanup with `always()` so failure evidence
+is retained. Adding a normal scenario requires one action and one thin workflow
+job; it must not duplicate RPM installation, systemd readiness, evidence, or
+environment cleanup commands.
+
 ## Adding a Provider fixture
 
 Add a Python file under
 `.github/actions/provider/create-fixture/fixtures/`. The file must use only
 the public `stateforge_rpc` authoring API and read lifecycle paths from the
 environment variables supplied by `provider/start`. Select the file through
-the `fixture` input. No workflow, container, service-control, or evidence code
-is required for a normal fixture.
+the scenario setup action's `fixture` input. No container, service-control, or
+evidence code is required for a normal fixture.
 
 ## Local RPM build
 

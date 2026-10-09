@@ -3,11 +3,6 @@ name: RPM / Build
 on:
   workflow_call:
     inputs:
-      version:
-        description: Optional version override; defaults to pyproject.toml.
-        required: false
-        type: string
-        default: ""
       artifact-name:
         description: Name used to publish the RPM build artifact.
         required: false
@@ -50,8 +45,6 @@ jobs:
       - name: Build RPM
         id: rpm
         uses: ./.github/actions/rpm/build
-        with:
-          version: ${{ inputs.version }}
 
       - name: Upload immutable build output
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

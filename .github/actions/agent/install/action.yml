@@ -122,8 +122,83 @@ runs:
           sed -i \
             's|url = ""|url = "https://control.stateforge.test"|' \
             /etc/stateforge-agent/config.toml
-        docker exec "${CONTAINER_NAME}" stateforge-agent --version \
+        cli_output="$(
+          docker exec "${CONTAINER_NAME}" stateforge-agent --version
+        )"
+        cli_version="${cli_output#stateforge-agent }"
+        if [[ -z "${cli_version}" || "${cli_version}" == "${cli_output}" ]]; then
+          printf 'Unexpected CLI version output: %s\n' "${cli_output}" >&2
+          exit 1
+        fi
+        printf '%s\n' "${cli_output}" \
           > "${EVIDENCE_DIRECTORY}/agent-version.txt"
+
+        docker exec "${CONTAINER_NAME}" python3 -c '
+        import json
+        from importlib.metadata import distribution
+        from pathlib import Path
+
+        import stateforge_agent
+
+        package = distribution("stateforge-agent")
+        metadata = next(
+            path
+            for path in package.files or ()
+            if path.name == "METADATA" and path.parent.name.endswith(".dist-info")
+        )
+        print(json.dumps({
+            "installer": (package.read_text("INSTALLER") or "").strip(),
+            "metadata_file": str(Path(package.locate_file(metadata)).resolve()),
+            "module_file": str(Path(stateforge_agent.__file__).resolve()),
+            "name": package.metadata["Name"],
+            "version": package.version,
+        }, indent=2, sort_keys=True))
+        ' > "${EVIDENCE_DIRECTORY}/python-package.json"
+
+        python_version="$(
+          jq -r '.version' "${EVIDENCE_DIRECTORY}/python-package.json"
+        )"
+        module_file="$(
+          jq -r '.module_file' "${EVIDENCE_DIRECTORY}/python-package.json"
+        )"
+        metadata_file="$(
+          jq -r '.metadata_file' "${EVIDENCE_DIRECTORY}/python-package.json"
+        )"
+        rpm_version="$(
+          docker exec "${CONTAINER_NAME}" \
+            rpm -q --queryformat '%{VERSION}' stateforge-agent
+        )"
+
+        module_owner="$(
+          docker exec "${CONTAINER_NAME}" \
+            rpm -qf --queryformat '%{NAME}' "${module_file}"
+        )"
+        metadata_owner="$(
+          docker exec "${CONTAINER_NAME}" \
+            rpm -qf --queryformat '%{NAME}' "${metadata_file}"
+        )"
+        printf '%s\n' "${module_owner}" \
+          > "${EVIDENCE_DIRECTORY}/python-module-owner.txt"
+        printf '%s\n' "${metadata_owner}" \
+          > "${EVIDENCE_DIRECTORY}/python-metadata-owner.txt"
+        if [[ "${module_owner}" != "stateforge-agent" || \
+              "${metadata_owner}" != "stateforge-agent" ]]; then
+          printf 'RPM does not own the imported Agent package and metadata.\n' \
+            >&2
+          exit 1
+        fi
+        {
+          printf 'cli_version=%s\n' "${cli_version}"
+          printf 'python_distribution_version=%s\n' "${python_version}"
+          printf 'rpm_version=%s\n' "${rpm_version}"
+        } > "${EVIDENCE_DIRECTORY}/version-consistency.txt"
+        if [[ "${cli_version}" != "${python_version}" || \
+              "${cli_version}" != "${rpm_version}" ]]; then
+          printf 'CLI, Python distribution, and RPM versions disagree.\n' >&2
+          cat "${EVIDENCE_DIRECTORY}/version-consistency.txt" >&2
+          exit 1
+        fi
+
         docker exec "${CONTAINER_NAME}" rpm -q stateforge-agent \
           > "${EVIDENCE_DIRECTORY}/installed-package.txt"
         docker exec "${CONTAINER_NAME}" rpm -ql stateforge-agent \

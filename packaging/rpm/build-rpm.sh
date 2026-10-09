@@ -8,7 +8,6 @@ readonly SCRIPT_DIRECTORY="$(
 readonly SOURCE_ROOT="$(cd -- "${SCRIPT_DIRECTORY}/../.." && pwd)"
 
 OUTPUT_DIRECTORY="${SOURCE_ROOT}/dist/rpm"
-VERSION=""
 CONTAINER_IMAGE="stateforge-agent-rpm-builder:fedora42"
 
 usage() {
@@ -17,7 +16,6 @@ usage() {
         '' \
         'Options:' \
         '  --output-directory PATH  Destination for RPMs and metadata.' \
-        '  --version VERSION        Override the pyproject version.' \
         '  --container-image IMAGE  Builder image tag.'
 }
 
@@ -33,10 +31,6 @@ parse_arguments() {
         case "$1" in
             --output-directory)
                 OUTPUT_DIRECTORY="$2"
-                shift 2
-                ;;
-            --version)
-                VERSION="$2"
                 shift 2
                 ;;
             --container-image)
@@ -108,7 +102,6 @@ main() {
     docker run --rm \
         --env "HOST_UID=$(id -u)" \
         --env "HOST_GID=$(id -g)" \
-        --env "VERSION=${VERSION}" \
         --mount "type=bind,source=${SOURCE_ROOT},target=/workspace,readonly" \
         --mount "type=bind,source=${OUTPUT_DIRECTORY},target=/output" \
         "${CONTAINER_IMAGE}"

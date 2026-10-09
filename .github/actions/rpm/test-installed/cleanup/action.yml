@@ -1,0 +1,27 @@
+name: Finish an installed-Agent scenario
+description: Capture scenario evidence, uninstall the RPM, and remove the environment.
+
+inputs:
+  container-name:
+    description: Fedora container used by the scenario.
+    required: false
+    default: stateforge-agent-system-test
+  evidence-directory:
+    description: Directory receiving installed-system evidence.
+    required: false
+    default: dist/agent-system-test-evidence
+
+outputs:
+  evidence-directory:
+    description: Absolute host evidence directory.
+    value: ${{ steps.evidence.outputs.evidence-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Collect evidence and remove the environment
+      id: evidence
+      uses: ./.github/actions/agent/collect-evidence
+      with:
+        container-name: ${{ inputs.container-name }}
+        evidence-directory: ${{ inputs.evidence-directory }}
