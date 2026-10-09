@@ -23,6 +23,10 @@ from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestDeclaration,
     cache_key,
 )
+from stateforge_agent._sfp._services.manifest.limits import (
+    MAX_MANIFEST_SCHEMA_VERSIONS,
+    MAX_RESPONSE_BYTES,
+)
 from stateforge_agent._sfp._services.manifest.schema import validate_schema
 
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
@@ -142,6 +146,34 @@ async def _start_peer(
     return server, channel
 
 
+async def _start_raw_peer(
+    payload: bytes,
+) -> tuple[grpc.aio.Server, grpc.aio.Channel]:
+    def get_manifest(request, context):
+        del request, context
+        return payload
+
+    method = grpc.unary_unary_rpc_method_handler(
+        get_manifest,
+        request_deserializer=manifest_pb2.GetManifestRequest.FromString,
+        response_serializer=lambda value: value,
+    )
+    server = grpc.aio.server()
+    server.add_generic_rpc_handlers(
+        (
+            grpc.method_handlers_generic_handler(
+                "stateforge.sfp.manifest.v1.ManifestService",
+                {"GetManifest": method},
+            ),
+        )
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    await channel.channel_ready()
+    return server, channel
+
+
 def test_validates_the_protocol_conformance_revision() -> None:
     response = _response()
 
@@ -217,6 +249,65 @@ def test_manifest_cache_is_bounded() -> None:
     assert len(cache) == 1
     assert cache.get(first.key) is None
     assert cache.get(second.key) is second
+
+
+@pytest.mark.parametrize(
+    "versions",
+    [
+        tuple(range(1, MAX_MANIFEST_SCHEMA_VERSIONS + 2)),
+        (0,),
+        (-1,),
+        (2**32,),
+        (True,),
+        ("1",),
+    ],
+)
+def test_rejects_invalid_supported_schema_offers(versions: tuple) -> None:
+    with pytest.raises(ValueError, match="Manifest schema versions"):
+        ManifestClient(supported_schema_versions=versions)
+
+
+def test_accepts_the_supported_schema_offer_boundaries() -> None:
+    ManifestClient(
+        supported_schema_versions=tuple(
+            range(1, MAX_MANIFEST_SCHEMA_VERSIONS + 1)
+        )
+    )
+    ManifestClient(supported_schema_versions=((2**32) - 1,))
+
+
+@pytest.mark.asyncio
+async def test_rejects_oversized_wire_response_before_decoding() -> None:
+    server, channel = await _start_raw_peer(b"\x80" * (MAX_RESPONSE_BYTES + 1))
+
+    try:
+        with pytest.raises(SfpManifestError, match="exceeds the P1 limit"):
+            await ManifestClient(read_attempts=1).retrieve(
+                channel,
+                _descriptor(),
+                sfp_version=_SFP_VERSION,
+                session_id=_SESSION_ID,
+            )
+    finally:
+        await channel.close()
+        await server.stop(grace=None)
+
+
+@pytest.mark.asyncio
+async def test_normalizes_malformed_wire_response() -> None:
+    server, channel = await _start_raw_peer(b"\x80")
+
+    try:
+        with pytest.raises(SfpManifestError, match="protobuf is malformed"):
+            await ManifestClient(read_attempts=1).retrieve(
+                channel,
+                _descriptor(),
+                sfp_version=_SFP_VERSION,
+                session_id=_SESSION_ID,
+            )
+    finally:
+        await channel.close()
+        await server.stop(grace=None)
 
 
 @pytest.mark.asyncio

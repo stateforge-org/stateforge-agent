@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from typing import Protocol
 
 import grpc
-from stateforge_protocol.sfp.manifest.v1 import manifest_pb2, manifest_pb2_grpc
+from google.protobuf.message import DecodeError
+from stateforge_protocol.sfp.manifest.v1 import manifest_pb2
 
 from stateforge_agent._sfp._runtime.descriptor import (
     ProviderEndpointDescriptor,
@@ -25,6 +27,7 @@ from stateforge_agent._sfp._services.manifest.declaration import (
 from stateforge_agent._sfp._services.manifest.limits import (
     DEFAULT_READ_ATTEMPTS,
     DEFAULT_RETRY_INITIAL_DELAY_SECONDS,
+    MAX_MANIFEST_SCHEMA_VERSIONS,
     MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES,
     SUPPORTED_MANIFEST_SCHEMA_VERSIONS,
@@ -55,9 +58,23 @@ class _ManifestUnaryCall(Protocol):
         request: manifest_pb2.GetManifestRequest,
         *,
         timeout: float,
-    ) -> Awaitable[manifest_pb2.GetManifestResponse]:
+    ) -> Awaitable[_DecodedManifestResponse | None]:
         """Issue one Manifest Exchange request."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class _DecodedManifestResponse:
+    """Carry a decoded response or a safe wire-rejection reason."""
+
+    response: manifest_pb2.GetManifestResponse | None = None
+    rejection: str | None = None
+
+
+_GET_MANIFEST_METHOD = (
+    "/stateforge.sfp.manifest.v1.ManifestService/GetManifest"
+)
+_MAX_UINT32 = (1 << 32) - 1
 
 
 class ManifestClient:
@@ -79,12 +96,27 @@ class ManifestClient:
         """Configure one reusable client for the shared Provider channels."""
         if not supported_schema_versions:
             raise ValueError("At least one manifest schema must be supported")
+        if len(supported_schema_versions) > MAX_MANIFEST_SCHEMA_VERSIONS:
+            raise ValueError(
+                "Manifest schema versions may contain at most "
+                f"{MAX_MANIFEST_SCHEMA_VERSIONS} values"
+            )
+        if any(
+            not isinstance(version, int) or isinstance(version, bool)
+            for version in supported_schema_versions
+        ):
+            raise ValueError("Manifest schema versions must be integers")
         if len(set(supported_schema_versions)) != len(
             supported_schema_versions
         ):
             raise ValueError("Manifest schema versions must be unique")
-        if any(version <= 0 for version in supported_schema_versions):
-            raise ValueError("Manifest schema versions must be positive")
+        if any(
+            version <= 0 or version > _MAX_UINT32
+            for version in supported_schema_versions
+        ):
+            raise ValueError(
+                "Manifest schema versions must be positive uint32 values"
+            )
         if timeout_seconds <= 0:
             raise ValueError("Manifest timeout must be positive")
         if read_attempts <= 0:
@@ -117,8 +149,23 @@ class ManifestClient:
         if request.ByteSize() > MAX_REQUEST_BYTES:
             raise SfpManifestError("Manifest request exceeds the P1 limit")
 
-        stub = manifest_pb2_grpc.ManifestServiceStub(channel)
-        response = await self._read(stub, request)
+        # Bind the P1 response limit to this procedure rather than raising the
+        # ceiling for every service multiplexed over the shared SFP channel.
+        call: _ManifestUnaryCall = channel.unary_unary(
+            _GET_MANIFEST_METHOD,
+            request_serializer=(
+                manifest_pb2.GetManifestRequest.SerializeToString
+            ),
+            response_deserializer=_decode_manifest_response,
+        )
+        decoded = await self._read(call, request)
+        if decoded is None:
+            raise SfpManifestError("Manifest response protobuf is malformed")
+        if decoded.rejection is not None:
+            raise SfpManifestError(decoded.rejection)
+        response = decoded.response
+        if response is None:
+            raise SfpManifestError("Manifest response protobuf is malformed")
         if response.ByteSize() > MAX_RESPONSE_BYTES:
             raise SfpManifestError("Manifest response exceeds the P1 limit")
         self._validate_header(
@@ -140,13 +187,10 @@ class ManifestClient:
 
     async def _read(
         self,
-        stub: manifest_pb2_grpc.ManifestServiceStub,
+        call: _ManifestUnaryCall,
         request: manifest_pb2.GetManifestRequest,
-    ) -> manifest_pb2.GetManifestResponse:
+    ) -> _DecodedManifestResponse | None:
         """Retry only transient reads, with a finite deadline per attempt."""
-        # types-grpcio currently models generated aio unary calls as returning
-        # the response directly even though grpc.aio returns an awaitable call.
-        call: _ManifestUnaryCall = stub.GetManifest  # type: ignore[assignment]
         for attempt in range(self._read_attempts):
             try:
                 return await call(
@@ -215,3 +259,18 @@ class ManifestClient:
             )
         if not response.HasField("manifest"):
             raise SfpManifestError("Manifest response is incomplete")
+
+
+def _decode_manifest_response(payload: bytes) -> _DecodedManifestResponse:
+    """Bound and decode one serialized P1 response without raising in gRPC."""
+    if len(payload) > MAX_RESPONSE_BYTES:
+        return _DecodedManifestResponse(
+            rejection="Manifest response exceeds the P1 limit"
+        )
+    try:
+        response = manifest_pb2.GetManifestResponse.FromString(payload)
+    except DecodeError:
+        return _DecodedManifestResponse(
+            rejection="Manifest response protobuf is malformed"
+        )
+    return _DecodedManifestResponse(response=response)
