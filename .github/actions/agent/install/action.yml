@@ -1,0 +1,140 @@
+name: Install StateForge Agent
+description: Install an Agent RPM and its wheel-only dependencies in Fedora.
+
+inputs:
+  rpm-directory:
+    description: Directory containing one binary Agent RPM and SHA256SUMS.
+    required: false
+    default: dist/rpm
+  dependency-wheel-directory:
+    description: Directory containing the matching Protocol wheel.
+    required: true
+  evidence-directory:
+    description: Host directory that receives installed-system evidence.
+    required: false
+    default: dist/agent-system-test-evidence
+  container-name:
+    description: Name of the persistent Fedora system-test container.
+    required: false
+    default: stateforge-agent-system-test
+  container-image:
+    description: Local tag for the Fedora system-test image.
+    required: false
+    default: stateforge-agent-system-test:fedora42
+
+outputs:
+  container-name:
+    description: Running container that owns the installed Agent service.
+    value: ${{ steps.install.outputs.container-name }}
+  evidence-directory:
+    description: Absolute host evidence directory mounted in the container.
+    value: ${{ steps.install.outputs.evidence-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install exact RPM in a persistent Fedora system
+      id: install
+      shell: bash
+      env:
+        CONTAINER_IMAGE: ${{ inputs.container-image }}
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+        RPM_DIRECTORY: ${{ inputs.rpm-directory }}
+        WHEEL_DIRECTORY: ${{ inputs.dependency-wheel-directory }}
+      run: |
+        mapfile -t rpms < <(
+          find "${RPM_DIRECTORY}" -maxdepth 1 -type f \
+            -name 'stateforge-agent-*.rpm' ! -name '*.src.rpm' -print
+        )
+        if (( ${#rpms[@]} != 1 )); then
+          printf 'Expected one binary Agent RPM, found %d.\n' \
+            "${#rpms[@]}" >&2
+          exit 1
+        fi
+        if [[ ! -f "${RPM_DIRECTORY}/SHA256SUMS" ]]; then
+          printf 'Missing RPM checksum manifest.\n' >&2
+          exit 1
+        fi
+        if ! compgen -G "${WHEEL_DIRECTORY}/stateforge_protocol-*.whl" \
+          >/dev/null; then
+          printf 'Missing StateForge Protocol wheel.\n' >&2
+          exit 1
+        fi
+
+        (
+          cd -- "${RPM_DIRECTORY}"
+          sha256sum --check SHA256SUMS
+        )
+        mkdir -p "${EVIDENCE_DIRECTORY}"
+        evidence_directory="$(cd -- "${EVIDENCE_DIRECTORY}" && pwd -P)"
+        rpm_directory="$(cd -- "${RPM_DIRECTORY}" && pwd -P)"
+        wheel_directory="$(cd -- "${WHEEL_DIRECTORY}" && pwd -P)"
+        rpm_name="$(basename -- "${rpms[0]}")"
+
+        docker build \
+          --file packaging/rpm/Dockerfile.test \
+          --tag "${CONTAINER_IMAGE}" \
+          packaging/rpm
+        docker rm --force "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+        docker run --detach \
+          --name "${CONTAINER_NAME}" \
+          --privileged \
+          --cgroupns=host \
+          --tmpfs /run \
+          --tmpfs /run/lock \
+          --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+          --mount \
+            "type=bind,source=${rpm_directory},target=/artifacts,readonly" \
+          --mount \
+            "type=bind,source=${wheel_directory},target=/wheels,readonly" \
+          --mount \
+            "type=bind,source=${evidence_directory},target=/evidence" \
+          "${CONTAINER_IMAGE}" >/dev/null
+
+        for _ in {1..60}; do
+          state="$(docker exec "${CONTAINER_NAME}" \
+            systemctl is-system-running 2>/dev/null || true)"
+          if [[ "${state}" == "running" || "${state}" == "degraded" ]]; then
+            break
+          fi
+          sleep 1
+        done
+        if [[ "${state:-}" != "running" && "${state:-}" != "degraded" ]]; then
+          printf 'systemd did not become ready in %s.\n' \
+            "${CONTAINER_NAME}" >&2
+          exit 1
+        fi
+
+        docker exec "${CONTAINER_NAME}" \
+          rpm -Uvh --nodeps "/artifacts/${rpm_name}" \
+          > "${EVIDENCE_DIRECTORY}/rpm-install.txt"
+        docker exec "${CONTAINER_NAME}" rpm -V --nodeps stateforge-agent \
+          > "${EVIDENCE_DIRECTORY}/rpm-verify.txt"
+        docker exec "${CONTAINER_NAME}" python3 -c \
+          'from importlib.metadata import requires; print("\n".join(requires("stateforge-agent") or ()))' \
+          | grep -Eiv '^stateforge-protocol([ <>=!~;]|$)' \
+          > "${EVIDENCE_DIRECTORY}/agent-runtime-requirements.txt"
+        docker exec "${CONTAINER_NAME}" bash -lc \
+          'python3 -m pip install --no-cache-dir --break-system-packages --prefix /usr --requirement /evidence/agent-runtime-requirements.txt /wheels/stateforge_protocol-*.whl'
+
+        docker exec "${CONTAINER_NAME}" \
+          sed -i \
+            's|url = ""|url = "https://control.stateforge.test"|' \
+            /etc/stateforge-agent/config.toml
+        docker exec "${CONTAINER_NAME}" stateforge-agent --version \
+          > "${EVIDENCE_DIRECTORY}/agent-version.txt"
+        docker exec "${CONTAINER_NAME}" rpm -q stateforge-agent \
+          > "${EVIDENCE_DIRECTORY}/installed-package.txt"
+        docker exec "${CONTAINER_NAME}" rpm -ql stateforge-agent \
+          > "${EVIDENCE_DIRECTORY}/installed-files.txt"
+        docker exec "${CONTAINER_NAME}" rpm -qf /usr/bin/stateforge-agent \
+          > "${EVIDENCE_DIRECTORY}/executable-owner.txt"
+        docker exec "${CONTAINER_NAME}" \
+          rpm -qf /usr/lib/systemd/system/stateforge-agent.service \
+          > "${EVIDENCE_DIRECTORY}/service-unit-owner.txt"
+
+        {
+          printf 'container-name=%s\n' "${CONTAINER_NAME}"
+          printf 'evidence-directory=%s\n' "${evidence_directory}"
+        } >> "${GITHUB_OUTPUT}"

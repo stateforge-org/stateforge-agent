@@ -1,0 +1,75 @@
+name: Test installed StateForge Agent RPM
+description: Run the installed Agent service against a public-API Provider fixture.
+
+inputs:
+  repository-token:
+    description: Short-lived token for unpublished dependency repositories.
+    required: true
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving installed-system evidence.
+    required: false
+    default: dist/agent-system-test-evidence
+  provider-ref:
+    description: Provider revision used to build the dummy Provider wheel.
+    required: false
+    default: mvp/implementation
+  protocol-ref:
+    description: Protocol revision shared by the Agent and Provider.
+    required: false
+    default: mvp/implementation
+
+outputs:
+  evidence-directory:
+    description: Absolute directory containing system-test evidence.
+    value: ${{ steps.evidence.outputs.evidence-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build Provider fixture wheels
+      id: fixture
+      uses: ./.github/actions/provider/create-fixture
+      with:
+        repository-token: ${{ inputs.repository-token }}
+        provider-ref: ${{ inputs.provider-ref }}
+        protocol-ref: ${{ inputs.protocol-ref }}
+
+    - name: Install Agent RPM
+      id: agent
+      uses: ./.github/actions/agent/install
+      with:
+        rpm-directory: ${{ inputs.rpm-directory }}
+        dependency-wheel-directory: ${{ steps.fixture.outputs.wheel-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Start Agent service
+      uses: ./.github/actions/agent/start
+      with:
+        container-name: ${{ steps.agent.outputs.container-name }}
+
+    - name: Start Provider fixture
+      id: provider
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.agent.outputs.container-name }}
+        fixture-path: ${{ steps.fixture.outputs.fixture-path }}
+        wheel-directory: ${{ steps.fixture.outputs.wheel-directory }}
+
+    - name: Assert Provider manifest exchange
+      uses: ./.github/actions/provider/assert-manifest
+      with:
+        container-name: ${{ steps.agent.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Collect installed-system evidence
+      id: evidence
+      if: ${{ always() }}
+      uses: ./.github/actions/agent/collect-evidence
+      with:
+        container-name: stateforge-agent-system-test
+        evidence-directory: ${{ inputs.evidence-directory }}

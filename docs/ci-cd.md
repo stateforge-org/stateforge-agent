@@ -1,91 +1,148 @@
-# RPM CI/CD building blocks
+# Agent package CI/CD library
 
-The Agent repository builds and verifies RPMs through reusable GitHub Actions
-components. Pull-request checks, release-candidate checks, and a future package
-publisher all consume the same build contract instead of copying shell steps.
+The repository exposes a small GitHub Actions library for building the Agent
+RPM and exercising it as installed software against an independent Provider
+process. Event workflows select when a pipeline runs; callable workflows own
+job topology and artifact transfer; domain actions own one reusable lifecycle
+operation.
 
-## Design
+## Structure
 
-The automation has three layers:
+```text
+.github/
+├── actions/
+│   ├── rpm/
+│   │   ├── build/
+│   │   └── test-installed/
+│   ├── agent/
+│   │   ├── install/
+│   │   ├── start/
+│   │   └── collect-evidence/
+│   └── provider/
+│       ├── create-fixture/
+│       ├── start/
+│       └── assert-manifest/
+└── workflows/
+    ├── rpm-build.yml
+    ├── rpm-installed-test.yml
+    ├── rpm-build-and-test.yml
+    ├── rpm-ci.yml
+    └── rpm-release-candidate.yml
+```
 
-1. `packaging/rpm/*.sh` contains the commands and remains runnable locally.
-2. `.github/actions/` exposes those commands as repository-local composite
-   actions.
-3. Reusable workflows own artifact transfer and job topology. Triggered
-   workflows are intentionally small callers.
+GitHub requires workflow files to live directly in `.github/workflows`, so
+workflow names describe their capability rather than carrying a `reusable-`
+prefix. Composite actions can be nested and form the discoverable domain
+library.
 
-The RPM is built once. Its binary RPM, source RPM, checksums, and structured
-metadata are uploaded under one artifact name. The installed-package job
-downloads that exact artifact, verifies its checksum, installs it in a clean
-Fedora container, verifies the package identity, files, ownership, import root,
-and systemd unit, records evidence, and removes the package. A later
-publication job must consume the already tested artifact rather than rebuild
-it.
+## Installed-system path
+
+The RPM is built once. The installed-system job downloads those exact bytes,
+then performs this sequence:
+
+1. Build wheels for the selected Protocol and Provider revisions.
+2. Start a clean Fedora systemd container with no source checkout mounted.
+3. Verify and install the Agent RPM.
+4. Install the matching Protocol wheel and third-party runtime dependencies.
+5. Start the packaged `stateforge-agent.service` unit.
+6. Start a dummy Provider as a separate non-root systemd service.
+7. Wait for the Agent to accept that Provider's manifest.
+8. Capture bounded journals, process state, descriptors, package ownership,
+   and package verification evidence.
+9. Stop services, uninstall the RPM, verify removal, and remove the container.
 
 ```mermaid
 flowchart LR
-    Caller[PR or release-candidate caller]
-    Gate[Reusable RPM gate]
-    Build[Build RPM action]
-    Artifact[(RPM artifact + digest)]
-    Test[Installed RPM action]
-    Publish[Future publisher]
+    Event[PR or release candidate]
+    Pipeline[RPM build and test]
+    Build[Build RPM]
+    Artifact[(RPM + checksum)]
+    Install[Install Agent RPM]
+    Agent[Start packaged service]
+    Provider[Start dummy Provider]
+    Manifest[Assert manifest accepted]
+    Evidence[(Evidence)]
 
-    Caller --> Gate
-    Gate --> Build
-    Build --> Artifact
-    Artifact --> Test
-    Test -. successful gate .-> Publish
-    Artifact -. same bytes .-> Publish
+    Event --> Pipeline
+    Pipeline --> Build --> Artifact --> Install
+    Install --> Agent --> Provider --> Manifest --> Evidence
 ```
 
-## Local parity
+No Agent or Provider source directory is mounted into the test system. The
+Agent executable and package must be owned by the RPM. The Provider and
+Protocol are built into wheels before the test because
+`stateforge-provider-implementation` and `stateforge-protocol` are not yet
+published to PyPI. Those wheels are installed into the test system; their
+source checkouts are never used as import roots.
 
-Build an RPM with the same command used by the composite action:
+Because those source repositories are private, the installed-test workflow
+mints a short-lived installation token from a dedicated GitHub App. Configure
+the repository secrets `STATEFORGE_CI_APP_ID` and
+`STATEFORGE_CI_PRIVATE_KEY`; install that App on only
+`stateforge-protocol` and `stateforge-provider-implemntation` with read-only
+Contents permission. The token is scoped to those two repositories, is not
+persisted by checkout, and expires automatically. A long-lived personal
+access token is neither required nor accepted by the workflow interface.
+
+For reproducible release-candidate runs, pass commit SHAs as `provider-ref`
+and `protocol-ref`. Integration CI defaults to each repository's
+`mvp/implementation` branch so it continuously tests the current integrated
+contract.
+
+## Action responsibilities
+
+| Action | Responsibility |
+| --- | --- |
+| `rpm/build` | Build binary/source RPMs, checksums, and metadata. |
+| `rpm/test-installed` | Compose the complete installed Agent and Provider test. |
+| `agent/install` | Create clean Fedora, install the exact RPM and dependencies, and verify package ownership. |
+| `agent/start` | Start the packaged systemd unit and wait for an explicit readiness event. |
+| `agent/collect-evidence` | Capture bounded evidence, uninstall the RPM, and clean up. |
+| `provider/create-fixture` | Build Provider and Protocol wheels and stage a selected fixture. |
+| `provider/start` | Run the fixture as a separate non-root systemd service. |
+| `provider/assert-manifest` | Assert the Agent accepted the Provider manifest. |
+
+The fixture itself is intentionally small Python test data because the public
+Provider authoring API is Python. Provisioning, service control, readiness,
+evidence, and cleanup are not implemented in a second Python framework. Shell
+is retained only where the behavior being controlled is inherently Linux,
+RPM, Docker, or systemd behavior.
+
+## Workflows
+
+- `rpm-build.yml` builds and uploads one immutable RPM artifact.
+- `rpm-installed-test.yml` downloads that artifact and runs the installed
+  Agent/Provider test.
+- `rpm-build-and-test.yml` composes the two jobs and exposes the tested
+  artifact name, version, and SHA-256 digest.
+- `rpm-ci.yml` is the thin pull-request and integration-branch entry point.
+- `rpm-release-candidate.yml` is the thin manual pre-publication entry point.
+
+A publishing workflow must consume the artifact returned by
+`rpm-build-and-test.yml`. It must not rebuild the RPM after testing.
+
+## Adding a Provider fixture
+
+Add a Python file under
+`.github/actions/provider/create-fixture/fixtures/`. The file must use only
+the public `stateforge_rpc` authoring API and read lifecycle paths from the
+environment variables supplied by `provider/start`. Select the file through
+the `fixture` input. No workflow, container, service-control, or evidence code
+is required for a normal fixture.
+
+## Local RPM build
+
+The packaging implementation remains locally runnable because RPM creation is
+useful outside GitHub Actions:
 
 ```console
 packaging/rpm/build-rpm.sh
 ```
 
-Install and verify the resulting binary RPM in clean Fedora:
-
-```console
-packaging/rpm/test-installed-rpm.sh \
-  --rpm dist/rpm/stateforge-agent-0.1.0-1.fc42.noarch.rpm
-```
-
-Both commands require Docker. The installed-package container receives the
-RPM and an evidence directory, but it does not mount the source checkout. This
-prevents an import from the checkout from masquerading as an installed-package
-success.
-
-## Reuse
-
-- `reusable-rpm-build.yml` builds once and publishes the immutable artifact.
-- `reusable-rpm-test.yml` downloads and tests that artifact.
-- `reusable-rpm-gate.yml` composes both jobs and returns the tested artifact
-  name, version, and SHA-256 digest.
-- `rpm-ci.yml` is the thin pull-request and integration-branch caller.
-- `rpm-release-candidate.yml` is the thin manual pre-publication caller.
-
-A future publishing workflow should depend on the reusable gate and download
-`${{ needs.rpm.outputs.artifact-name }}`. It must not invoke the build action a
-second time.
+The complete installed-system sequence is intentionally assembled from GitHub
+Actions rather than duplicated in a local Python or shell harness. Each action
+contains the command it owns, and the CI run retains the resulting evidence.
 
 External actions are pinned to immutable commit SHAs, workflows use read-only
-repository permissions, checkout credentials are not persisted, and no
-production credentials enter build or test jobs.
-
-## Packaging boundary
-
-`stateforge-protocol` and the Agent's other Python dependencies are not yet
-distributed as system RPMs. This packaging gate therefore installs the Agent
-RPM with dependency resolution disabled and verifies only the artifact-owned
-package surface. It does not claim that the daemon can start without its
-runtime dependencies.
-
-Runtime and Provider integration workflows should consume this same tested RPM
-artifact, install their version-pinned dependency artifacts, and then start the
-service. Once all runtime dependencies are available as distribution packages,
-the installed-package action can use the system package manager and add a
-service-start assertion without changing how callers build or pass the RPM.
+repository permissions, and checkout credentials are not persisted. Build and
+test jobs receive no production credentials.

@@ -1,5 +1,5 @@
 name: Build StateForge Agent RPM
-description: Build the Agent binary RPM, source RPM, checksums, and metadata.
+description: Build the Agent RPMs, checksums, and machine-readable metadata.
 
 inputs:
   output-directory:

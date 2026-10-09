@@ -1,4 +1,4 @@
-name: Reusable RPM gate
+name: RPM / Build and test
 
 on:
   workflow_call:
@@ -18,6 +18,23 @@ on:
         required: false
         type: number
         default: 14
+      provider-ref:
+        description: Provider revision used by the dummy Provider.
+        required: false
+        type: string
+        default: mvp/implementation
+      protocol-ref:
+        description: Protocol revision shared by Agent and Provider.
+        required: false
+        type: string
+        default: mvp/implementation
+    secrets:
+      source_app_id:
+        description: GitHub App ID with read access to dependency sources.
+        required: true
+      source_private_key:
+        description: Private key for the dependency-source GitHub App.
+        required: true
     outputs:
       artifact-name:
         description: Tested RPM artifact, suitable for a later publish job.
@@ -34,7 +51,7 @@ permissions:
 
 jobs:
   build:
-    uses: ./.github/workflows/reusable-rpm-build.yml
+    uses: ./.github/workflows/rpm-build.yml
     with:
       version: ${{ inputs.version }}
       artifact-name: ${{ inputs.artifact-name }}
@@ -42,7 +59,13 @@ jobs:
 
   test:
     needs: build
-    uses: ./.github/workflows/reusable-rpm-test.yml
+    uses: ./.github/workflows/rpm-installed-test.yml
     with:
       artifact-name: ${{ needs.build.outputs.artifact-name }}
+      evidence-name: stateforge-agent-system-test-${{ github.run_id }}
+      provider-ref: ${{ inputs.provider-ref }}
+      protocol-ref: ${{ inputs.protocol-ref }}
       retention-days: ${{ inputs.retention-days }}
+    secrets:
+      source_app_id: ${{ secrets.source_app_id }}
+      source_private_key: ${{ secrets.source_private_key }}

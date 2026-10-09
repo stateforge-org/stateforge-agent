@@ -1,4 +1,4 @@
-name: Reusable RPM build
+name: RPM / Build
 
 on:
   workflow_call:
@@ -20,7 +20,7 @@ on:
         default: 14
     outputs:
       artifact-name:
-        description: Artifact containing the RPMs, checksums, and metadata.
+        description: Artifact containing RPMs, checksums, and metadata.
         value: ${{ jobs.build.outputs.artifact-name }}
       version:
         description: Version embedded in the RPM.
@@ -49,7 +49,7 @@ jobs:
 
       - name: Build RPM
         id: rpm
-        uses: ./.github/actions/build-rpm
+        uses: ./.github/actions/rpm/build
         with:
           version: ${{ inputs.version }}
 

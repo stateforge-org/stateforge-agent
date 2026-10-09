@@ -5,6 +5,8 @@ __pycache__/
 
 # Build and distribution artifacts
 build/
+!.github/actions/rpm/build/
+!.github/actions/rpm/build/action.yml
 dist/
 *.egg-info/
 target/

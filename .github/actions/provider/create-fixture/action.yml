@@ -1,0 +1,93 @@
+name: Create Provider fixture
+description: Build Provider and Protocol source revisions into wheels and stage a fixture.
+
+inputs:
+  repository-token:
+    description: Short-lived token with read access to Protocol and Provider.
+    required: true
+  fixture:
+    description: Provider fixture name from this action's fixture directory.
+    required: false
+    default: manifest
+  output-directory:
+    description: Directory that receives fixture files and dependency wheels.
+    required: false
+    default: dist/provider-fixture
+  provider-repository:
+    description: Repository containing the Provider runtime package.
+    required: false
+    default: stateforge-org/stateforge-provider-implemntation
+  provider-ref:
+    description: Provider revision to build; use a commit for reproducible runs.
+    required: false
+    default: mvp/implementation
+  protocol-repository:
+    description: Repository containing the public Protocol package.
+    required: false
+    default: stateforge-org/stateforge-protocol
+  protocol-ref:
+    description: Protocol revision to build; use a commit for reproducible runs.
+    required: false
+    default: mvp/implementation
+
+outputs:
+  fixture-path:
+    description: Absolute path to the staged Provider fixture.
+    value: ${{ steps.stage.outputs.fixture-path }}
+  wheel-directory:
+    description: Absolute path containing Provider and Protocol wheels.
+    value: ${{ steps.stage.outputs.wheel-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check out Protocol source
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        repository: ${{ inputs.protocol-repository }}
+        ref: ${{ inputs.protocol-ref }}
+        path: .stateforge-ci/sources/protocol
+        token: ${{ inputs.repository-token }}
+        persist-credentials: false
+
+    - name: Check out Provider source
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        repository: ${{ inputs.provider-repository }}
+        ref: ${{ inputs.provider-ref }}
+        path: .stateforge-ci/sources/provider
+        token: ${{ inputs.repository-token }}
+        persist-credentials: false
+
+    - name: Build fixture dependencies as wheels
+      id: stage
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        FIXTURE: ${{ inputs.fixture }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+      run: |
+        fixture_source="${ACTION_PATH}/fixtures/${FIXTURE}.py"
+        if [[ ! -f "${fixture_source}" ]]; then
+          printf 'Unknown Provider fixture: %s\n' "${FIXTURE}" >&2
+          exit 2
+        fi
+
+        rm -rf -- "${OUTPUT_DIRECTORY}"
+        mkdir -p "${OUTPUT_DIRECTORY}/wheels"
+        python3 -m pip wheel --no-deps \
+          --wheel-dir "${OUTPUT_DIRECTORY}/wheels" \
+          .stateforge-ci/sources/protocol \
+          .stateforge-ci/sources/provider
+        install -m 0644 "${fixture_source}" \
+          "${OUTPUT_DIRECTORY}/provider.py"
+        (
+          cd -- "${OUTPUT_DIRECTORY}"
+          sha256sum provider.py wheels/*.whl > SHA256SUMS
+        )
+
+        output_directory="$(cd -- "${OUTPUT_DIRECTORY}" && pwd -P)"
+        {
+          printf 'fixture-path=%s/provider.py\n' "${output_directory}"
+          printf 'wheel-directory=%s/wheels\n' "${output_directory}"
+        } >> "${GITHUB_OUTPUT}"

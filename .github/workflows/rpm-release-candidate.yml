@@ -24,8 +24,11 @@ concurrency:
 jobs:
   rpm:
     name: Build and test release candidate
-    uses: ./.github/workflows/reusable-rpm-gate.yml
+    uses: ./.github/workflows/rpm-build-and-test.yml
     with:
       version: ${{ inputs.version }}
       artifact-name: stateforge-agent-rpm-candidate-${{ github.run_id }}
       retention-days: ${{ inputs.retention-days }}
+    secrets:
+      source_app_id: ${{ secrets.STATEFORGE_CI_APP_ID }}
+      source_private_key: ${{ secrets.STATEFORGE_CI_PRIVATE_KEY }}
