@@ -58,7 +58,7 @@ then performs this sequence:
 6. Start a dummy Provider as a separate non-root systemd service.
 7. Wait for the Agent to accept that Provider's manifest.
 8. Prove the CLI, imported Python distribution, and RPM versions agree and
-   that RPM owns the imported module and distribution metadata.
+   that RPM owns the imported module.
 9. Capture bounded journals, process state, descriptors, package ownership,
    and package verification evidence.
 10. Stop services, uninstall the RPM, verify removal, and remove the container.

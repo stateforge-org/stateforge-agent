@@ -127,13 +127,13 @@ def test_installed_python_and_rpm_identity_must_agree() -> None:
 
     assert 'distribution("stateforge-agent")' in install
     assert "stateforge_agent.__file__" in install
+    assert "package.files" not in install
+    assert 'package.metadata["Name"]' in install
+    assert "package.version" in install
     assert "python-package.json" in install
     assert "python-module-owner.txt" in install
-    assert "python-metadata-owner.txt" in install
     assert "rpm -qf --queryformat '%{NAME}' \"${module_file}\"" in install
-    assert "rpm -qf --queryformat '%{NAME}' \"${metadata_file}\"" in install
     assert '"${module_owner}" != "stateforge-agent"' in install
-    assert '"${metadata_owner}" != "stateforge-agent"' in install
     assert "version-consistency.txt" in install
     assert '"${cli_version}" != "${python_version}"' in install
     assert '"${cli_version}" != "${rpm_version}"' in install

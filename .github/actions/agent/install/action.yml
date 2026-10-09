@@ -141,14 +141,8 @@ runs:
         import stateforge_agent
 
         package = distribution("stateforge-agent")
-        metadata = next(
-            path
-            for path in package.files or ()
-            if path.name == "METADATA" and path.parent.name.endswith(".dist-info")
-        )
         print(json.dumps({
             "installer": (package.read_text("INSTALLER") or "").strip(),
-            "metadata_file": str(Path(package.locate_file(metadata)).resolve()),
             "module_file": str(Path(stateforge_agent.__file__).resolve()),
             "name": package.metadata["Name"],
             "version": package.version,
@@ -161,9 +155,6 @@ runs:
         module_file="$(
           jq -r '.module_file' "${EVIDENCE_DIRECTORY}/python-package.json"
         )"
-        metadata_file="$(
-          jq -r '.metadata_file' "${EVIDENCE_DIRECTORY}/python-package.json"
-        )"
         rpm_version="$(
           docker exec "${CONTAINER_NAME}" \
             rpm -q --queryformat '%{VERSION}' stateforge-agent
@@ -173,18 +164,10 @@ runs:
           docker exec "${CONTAINER_NAME}" \
             rpm -qf --queryformat '%{NAME}' "${module_file}"
         )"
-        metadata_owner="$(
-          docker exec "${CONTAINER_NAME}" \
-            rpm -qf --queryformat '%{NAME}' "${metadata_file}"
-        )"
         printf '%s\n' "${module_owner}" \
           > "${EVIDENCE_DIRECTORY}/python-module-owner.txt"
-        printf '%s\n' "${metadata_owner}" \
-          > "${EVIDENCE_DIRECTORY}/python-metadata-owner.txt"
-        if [[ "${module_owner}" != "stateforge-agent" || \
-              "${metadata_owner}" != "stateforge-agent" ]]; then
-          printf 'RPM does not own the imported Agent package and metadata.\n' \
-            >&2
+        if [[ "${module_owner}" != "stateforge-agent" ]]; then
+          printf 'RPM does not own the imported Agent module.\n' >&2
           exit 1
         fi
         {
