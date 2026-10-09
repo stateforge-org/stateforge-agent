@@ -1,0 +1,48 @@
+name: Reusable RPM gate
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Optional version override; defaults to pyproject.toml.
+        required: false
+        type: string
+        default: ""
+      artifact-name:
+        description: Name of the RPM artifact passed between jobs.
+        required: false
+        type: string
+        default: stateforge-agent-rpm
+      retention-days:
+        description: Number of days to retain RPMs and evidence.
+        required: false
+        type: number
+        default: 14
+    outputs:
+      artifact-name:
+        description: Tested RPM artifact, suitable for a later publish job.
+        value: ${{ jobs.build.outputs.artifact-name }}
+      version:
+        description: Version embedded in the tested RPM.
+        value: ${{ jobs.build.outputs.version }}
+      rpm-sha256:
+        description: SHA-256 digest of the tested binary RPM.
+        value: ${{ jobs.build.outputs.rpm-sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-rpm-build.yml
+    with:
+      version: ${{ inputs.version }}
+      artifact-name: ${{ inputs.artifact-name }}
+      retention-days: ${{ inputs.retention-days }}
+
+  test:
+    needs: build
+    uses: ./.github/workflows/reusable-rpm-test.yml
+    with:
+      artifact-name: ${{ needs.build.outputs.artifact-name }}
+      retention-days: ${{ inputs.retention-days }}

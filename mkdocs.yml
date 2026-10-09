@@ -18,6 +18,7 @@ nav:
   - Overview: index.md
   - Running the Agent: running.md
   - Configuration: configuration.md
+  - RPM CI/CD: ci-cd.md
   - Internal reference:
       - Configuration models: reference/configuration.md
 

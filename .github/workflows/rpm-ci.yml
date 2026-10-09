@@ -1,0 +1,27 @@
+name: RPM CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - mvp/implementation
+  push:
+    branches:
+      - main
+      - mvp/implementation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpm-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rpm:
+    name: Build and test RPM
+    uses: ./.github/workflows/reusable-rpm-gate.yml
+    with:
+      artifact-name: stateforge-agent-rpm-${{ github.run_id }}
+      retention-days: 7

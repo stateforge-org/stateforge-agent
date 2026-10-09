@@ -1,0 +1,31 @@
+name: RPM release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional version override; normally read from pyproject.toml.
+        required: false
+        type: string
+        default: ""
+      retention-days:
+        description: Number of days to retain the tested candidate.
+        required: false
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpm-release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rpm:
+    name: Build and test release candidate
+    uses: ./.github/workflows/reusable-rpm-gate.yml
+    with:
+      version: ${{ inputs.version }}
+      artifact-name: stateforge-agent-rpm-candidate-${{ github.run_id }}
+      retention-days: ${{ inputs.retention-days }}

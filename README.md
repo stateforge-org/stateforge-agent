@@ -75,6 +75,18 @@ stateforge-agent run --config /path/to/config.toml
 The RPM package supplies the system configuration, service account, runtime
 directories, and systemd unit required for a managed installation.
 
+Build and verify that RPM through the same reusable commands used by GitHub
+Actions:
+
+```console
+packaging/rpm/build-rpm.sh
+packaging/rpm/test-installed-rpm.sh \
+  --rpm dist/rpm/stateforge-agent-0.1.0-1.fc42.noarch.rpm
+```
+
+See [RPM CI/CD building blocks](docs/ci-cd.md) for the composite actions,
+reusable workflows, exact-artifact handoff, and release-candidate gate.
+
 ## Quality checks
 
 ```console

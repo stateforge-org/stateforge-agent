@@ -1,0 +1,20 @@
+FROM fedora:42
+
+ENV container=docker
+
+RUN dnf -y install \
+        python3 \
+        rpm \
+        systemd \
+    && dnf clean all \
+    && systemctl mask \
+        dev-hugepages.mount \
+        sys-fs-fuse-connections.mount \
+        systemd-remount-fs.service
+
+COPY test-installed-rpm-inside-container.sh \
+    /usr/local/bin/test-installed-rpm
+
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/sbin/init"]
