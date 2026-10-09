@@ -12,14 +12,16 @@ from stateforge_protocol.sfp.bootstrap.v1 import (
 )
 
 from stateforge_agent._identity import parse_canonical_uuid4
-from stateforge_agent._runtime.provider_descriptor import (
+from stateforge_agent._sfp._runtime.descriptor import (
     ProviderEndpointDescriptor,
 )
-from stateforge_agent._sfp.errors import (
+from stateforge_agent._sfp._runtime.errors import (
     SfpConnectionError,
     SfpIncompatibleError,
 )
 from stateforge_agent._sfp.version import SfpVersion
+
+_MAX_SESSION_ID_CODE_POINTS = 255
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +30,7 @@ class HandshakeResult:
 
     selected_sfp_version: SfpVersion
     provider_runtime_id: UUID
-    session_id: UUID
+    session_id: str
 
 
 async def perform_handshake(
@@ -103,12 +105,11 @@ async def perform_handshake(
             "Handshake provider_runtime_id must be a canonical UUIDv4"
         ) from error
 
-    try:
-        session_id = parse_canonical_uuid4(response.session_id)
-    except ValueError as error:
+    session_id = response.session_id
+    if not session_id or len(session_id) > _MAX_SESSION_ID_CODE_POINTS:
         raise SfpConnectionError(
-            "Handshake session_id must be a canonical UUIDv4"
-        ) from error
+            "Handshake session_id must contain 1-255 Unicode code points"
+        )
 
     return HandshakeResult(
         selected_sfp_version=selected_version,

@@ -16,18 +16,23 @@ from stateforge_protocol.sfp.bootstrap.v1 import (
 )
 
 from stateforge_agent._runtime.daemon import _process_events
-from stateforge_agent._runtime.provider_descriptor import (
-    PROVIDER_DESCRIPTOR_SUFFIX,
-    load_provider_descriptor,
-)
-from stateforge_agent._runtime.provider_monitor import (
-    ProviderDirectoryEventKind,
-    ProviderDirectoryMonitor,
-)
 from stateforge_agent._sfp import (
     ProviderConnectionState,
     ProviderSessionManager,
     SfpVersion,
+)
+from stateforge_agent._sfp._runtime.descriptor import (
+    PROVIDER_DESCRIPTOR_SUFFIX,
+    ProviderEndpointDescriptor,
+    load_provider_descriptor,
+)
+from stateforge_agent._sfp._runtime.discovery import (
+    ProviderDirectoryEventKind,
+    ProviderDirectoryMonitor,
+)
+from stateforge_agent._sfp._services.manifest.declaration import (
+    ManifestCacheKey,
+    ManifestDeclaration,
 )
 
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
@@ -36,6 +41,28 @@ _INCOMPATIBLE_SFP_VERSION = SfpVersion(major=2, minor=0)
 _REPLACEMENT_ENDPOINT_GENERATION = 2
 _DESCRIPTOR_MODE = 0o640
 _SOCKET_MODE = 0o660
+_MANIFEST_REVISION = "sha256:" + ("0" * 64)
+
+
+class _StaticManifestClient:
+    async def retrieve(
+        self,
+        channel,
+        descriptor: ProviderEndpointDescriptor,
+        *,
+        sfp_version: SfpVersion,
+        session_id: str,
+    ) -> ManifestDeclaration:
+        del channel, session_id
+        return ManifestDeclaration(
+            key=ManifestCacheKey(
+                provider_instance_id=descriptor.provider_instance_id,
+                sfp_version=sfp_version,
+                schema_version=1,
+                revision=_MANIFEST_REVISION,
+            ),
+            document=b"{}",
+        )
 
 
 @pytest.fixture
@@ -159,6 +186,7 @@ def _session_manager(directory: Path) -> ProviderSessionManager:
         reconnect_initial_delay_seconds=0.2,
         reconnect_max_delay_seconds=0.2,
         descriptor_loader=reload_descriptor,
+        manifest_client=_StaticManifestClient(),
     )
 
 
@@ -280,7 +308,7 @@ async def test_failure_update_channel_loss_and_recovery_lifecycle(
         )
 
         await restarted_provider.start()
-        await _wait_for_state(manager, ProviderConnectionState.AVAILABLE)
+        await _wait_for_state(manager, ProviderConnectionState.CONNECTED)
         recovered = manager.get(_PROVIDER_INSTANCE_ID)
         assert recovered is not None
         assert (

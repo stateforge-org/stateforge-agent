@@ -9,12 +9,12 @@ from uuid import UUID
 
 import pytest
 
-from stateforge_agent._runtime.provider_descriptor import (
+from stateforge_agent._sfp._runtime.descriptor import (
     PROVIDER_DESCRIPTOR_SUFFIX,
     ProviderDescriptorError,
     load_provider_descriptor,
 )
-from stateforge_agent._runtime.provider_monitor import (
+from stateforge_agent._sfp._runtime.discovery import (
     ProviderDirectoryError,
     ProviderDirectoryEventKind,
     ProviderDirectoryMonitor,

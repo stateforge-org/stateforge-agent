@@ -1,4 +1,4 @@
-"""Define failures raised while establishing local SFP sessions."""
+"""Define failures raised by the Agent-side SFP runtime."""
 
 
 class SfpConnectionError(RuntimeError):
@@ -7,3 +7,7 @@ class SfpConnectionError(RuntimeError):
 
 class SfpIncompatibleError(SfpConnectionError):
     """Report that Agent and Provider share no supported SFP version."""
+
+
+class SfpManifestError(RuntimeError):
+    """Report a rejected Provider manifest without exposing its contents."""

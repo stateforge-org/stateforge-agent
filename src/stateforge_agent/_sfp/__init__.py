@@ -1,10 +1,11 @@
 """Agent-side StateForge Protocol session management."""
 
-from stateforge_agent._sfp.errors import (
+from stateforge_agent._sfp._runtime.errors import (
     SfpConnectionError,
     SfpIncompatibleError,
+    SfpManifestError,
 )
-from stateforge_agent._sfp.session import (
+from stateforge_agent._sfp._runtime.sessions import (
     ProviderConnectionState,
     ProviderConnectionStatus,
     ProviderSession,
@@ -19,5 +20,6 @@ __all__ = [
     "ProviderSessionManager",
     "SfpConnectionError",
     "SfpIncompatibleError",
+    "SfpManifestError",
     "SfpVersion",
 ]

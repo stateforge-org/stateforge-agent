@@ -15,22 +15,91 @@ from stateforge_protocol.sfp.bootstrap.v1 import (
     bootstrap_pb2_grpc,
 )
 
-from stateforge_agent._runtime.provider_descriptor import (
-    ProviderEndpointDescriptor,
-)
 from stateforge_agent._sfp import (
     ProviderConnectionState,
     ProviderSession,
     ProviderSessionManager,
     SfpConnectionError,
     SfpIncompatibleError,
+    SfpManifestError,
     SfpVersion,
+)
+from stateforge_agent._sfp._runtime.descriptor import (
+    ProviderEndpointDescriptor,
+)
+from stateforge_agent._sfp._services.manifest.declaration import (
+    ManifestCacheKey,
+    ManifestDeclaration,
 )
 
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _DIFFERENT_PROVIDER_INSTANCE_ID = "00000000-0000-4000-8000-000000000000"
 _SFP_VERSION = SfpVersion(major=1, minor=0)
 _REPLACEMENT_ENDPOINT_GENERATION = 2
+_MANIFEST_REVISION = "sha256:" + ("0" * 64)
+
+
+def _manifest_for(
+    provider_instance_id: UUID = _PROVIDER_INSTANCE_ID,
+) -> ManifestDeclaration:
+    return ManifestDeclaration(
+        key=ManifestCacheKey(
+            provider_instance_id=provider_instance_id,
+            sfp_version=_SFP_VERSION,
+            schema_version=1,
+            revision=_MANIFEST_REVISION,
+        ),
+        document=b"{}",
+    )
+
+
+class _StaticManifestClient:
+    async def retrieve(
+        self,
+        channel,
+        descriptor: ProviderEndpointDescriptor,
+        *,
+        sfp_version: SfpVersion,
+        session_id: str,
+    ) -> ManifestDeclaration:
+        del channel, sfp_version, session_id
+        return _manifest_for(descriptor.provider_instance_id)
+
+
+class _BlockingManifestClient(_StaticManifestClient):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def retrieve(
+        self,
+        channel,
+        descriptor: ProviderEndpointDescriptor,
+        *,
+        sfp_version: SfpVersion,
+        session_id: str,
+    ) -> ManifestDeclaration:
+        self.started.set()
+        await self.release.wait()
+        return await super().retrieve(
+            channel,
+            descriptor,
+            sfp_version=sfp_version,
+            session_id=session_id,
+        )
+
+
+class _RejectingManifestClient:
+    async def retrieve(
+        self,
+        channel,
+        descriptor: ProviderEndpointDescriptor,
+        *,
+        sfp_version: SfpVersion,
+        session_id: str,
+    ) -> ManifestDeclaration:
+        del channel, descriptor, sfp_version, session_id
+        raise SfpManifestError("invalid declaration")
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +194,11 @@ class _BootstrapServicer(bootstrap_pb2_grpc.BootstrapServiceServicer):
             provider_runtime_id=(
                 overrides.provider_runtime_id or str(self.runtime_id)
             ),
-            session_id=overrides.session_id or str(uuid4()),
+            session_id=(
+                overrides.session_id
+                if overrides.session_id is not None
+                else str(uuid4())
+            ),
         )
         if not overrides.omit_selected_sfp_version:
             response.selected_sfp_version.CopyFrom(
@@ -217,6 +290,7 @@ class _ControllableChannel:
 def _manager(
     *,
     descriptor_loader=None,
+    manifest_client=None,
     reconnect_initial_delay_seconds: float = 0.05,
     reconnect_max_delay_seconds: float = 0.2,
 ) -> ProviderSessionManager:
@@ -229,6 +303,7 @@ def _manager(
         reconnect_initial_delay_seconds=reconnect_initial_delay_seconds,
         reconnect_max_delay_seconds=reconnect_max_delay_seconds,
         descriptor_loader=descriptor_loader,
+        manifest_client=manifest_client or _StaticManifestClient(),
     )
 
 
@@ -313,7 +388,7 @@ async def test_establishes_and_reuses_negotiated_session(
     assert manager.get(_PROVIDER_INSTANCE_ID) is session
     status = manager.connection_status(_PROVIDER_INSTANCE_ID)
     assert status is not None
-    assert status.state is ProviderConnectionState.AVAILABLE
+    assert status.state is ProviderConnectionState.CONNECTED
 
     await manager.remove(_PROVIDER_INSTANCE_ID)
     await server.stop()
@@ -380,10 +455,81 @@ async def test_reports_handshaking_before_initial_promotion(
     await attempt
     status = manager.connection_status(_PROVIDER_INSTANCE_ID)
     assert status is not None
-    assert status.state is ProviderConnectionState.AVAILABLE
+    assert status.state is ProviderConnectionState.CONNECTED
     assert status.active_endpoint_generation == 1
     assert status.candidate_endpoint_generation is None
 
+    await manager.close()
+    await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_retrieves_manifest_before_promoting_session(
+    socket_directory: Path,
+) -> None:
+    manifest_client = _BlockingManifestClient()
+    server = _BootstrapServer(socket_directory, endpoint_generation=1)
+    manager = _manager(manifest_client=manifest_client)
+    await server.start()
+
+    attempt = asyncio.create_task(manager.establish(server.descriptor))
+    await asyncio.wait_for(manifest_client.started.wait(), timeout=1)
+
+    assert manager.get(_PROVIDER_INSTANCE_ID) is None
+    status = manager.connection_status(_PROVIDER_INSTANCE_ID)
+    assert status is not None
+    assert status.state is ProviderConnectionState.RETRIEVING_MANIFEST
+
+    manifest_client.release.set()
+    session = await attempt
+    assert session.manifest == _manifest_for()
+    status = manager.connection_status(_PROVIDER_INSTANCE_ID)
+    assert status is not None
+    assert status.state is ProviderConnectionState.CONNECTED
+
+    await manager.close()
+    await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_rejected_manifest_blocks_session_promotion(
+    socket_directory: Path,
+) -> None:
+    server = _BootstrapServer(socket_directory, endpoint_generation=1)
+    manager = _manager(manifest_client=_RejectingManifestClient())
+    await server.start()
+
+    with pytest.raises(SfpManifestError, match="invalid declaration"):
+        await manager.establish(server.descriptor)
+
+    assert manager.get(_PROVIDER_INSTANCE_ID) is None
+    status = manager.connection_status(_PROVIDER_INSTANCE_ID)
+    assert status is not None
+    assert status.state is ProviderConnectionState.MANIFEST_REJECTED
+    handshake_calls = server.servicer.handshake_calls
+    await asyncio.sleep(0.1)
+    assert server.servicer.handshake_calls == handshake_calls
+
+    await manager.close()
+    await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_preserves_opaque_handshake_session_identifier(
+    socket_directory: Path,
+) -> None:
+    session_id = "manifest-session/A β"
+    server = _BootstrapServer(
+        socket_directory,
+        endpoint_generation=1,
+        response_overrides=_HandshakeResponseOverrides(session_id=session_id),
+    )
+    manager = _manager()
+    await server.start()
+
+    session = await manager.establish(server.descriptor)
+
+    assert session.session_id == session_id
     await manager.close()
     await server.stop()
 
@@ -421,7 +567,8 @@ async def test_idle_channel_reconnects_without_invalidating_session() -> None:
         ),
         selected_sfp_version=_SFP_VERSION,
         provider_runtime_id=uuid4(),
-        session_id=uuid4(),
+        session_id="opaque-session",
+        manifest=_manifest_for(),
         _channel=channel,
     )
     watcher = asyncio.create_task(manager._watch_session(session))
@@ -454,7 +601,7 @@ async def test_reconnects_after_established_channel_loss(
         endpoint_generation=1,
     )
     await replacement_server.start()
-    await _wait_for_state(manager, ProviderConnectionState.AVAILABLE)
+    await _wait_for_state(manager, ProviderConnectionState.CONNECTED)
 
     replacement_session = manager.get(_PROVIDER_INSTANCE_ID)
     assert replacement_session is not None
@@ -495,7 +642,7 @@ async def test_retry_reloads_descriptor_before_reconnecting(
         endpoint_generation=1,
     )
     await compatible_server.start()
-    await _wait_for_state(manager, ProviderConnectionState.AVAILABLE)
+    await _wait_for_state(manager, ProviderConnectionState.CONNECTED)
 
     assert reloads
     assert set(reloads) == {_PROVIDER_INSTANCE_ID}
@@ -593,7 +740,7 @@ async def test_keeps_old_session_available_while_replacement_connects(
 
     status = manager.connection_status(_PROVIDER_INSTANCE_ID)
     assert status is not None
-    assert status.state is ProviderConnectionState.AVAILABLE
+    assert status.state is ProviderConnectionState.CONNECTED
     assert status.active_endpoint_generation == 1
     assert status.candidate_endpoint_generation is None
 
@@ -665,7 +812,7 @@ async def test_keeps_old_session_available_during_replacement_handshake(
     assert second_session is not first_session
     status = manager.connection_status(_PROVIDER_INSTANCE_ID)
     assert status is not None
-    assert status.state is ProviderConnectionState.AVAILABLE
+    assert status.state is ProviderConnectionState.CONNECTED
     assert (
         status.active_endpoint_generation == _REPLACEMENT_ENDPOINT_GENERATION
     )
@@ -718,7 +865,7 @@ async def test_active_loss_does_not_cancel_replacement_handshake(
     )
     status = manager.connection_status(_PROVIDER_INSTANCE_ID)
     assert status is not None
-    assert status.state is ProviderConnectionState.AVAILABLE
+    assert status.state is ProviderConnectionState.CONNECTED
     assert (
         status.active_endpoint_generation == _REPLACEMENT_ENDPOINT_GENERATION
     )
@@ -747,7 +894,7 @@ async def test_failed_replacement_preserves_available_session(
 
     status = manager.connection_status(_PROVIDER_INSTANCE_ID)
     assert status is not None
-    assert status.state is ProviderConnectionState.AVAILABLE
+    assert status.state is ProviderConnectionState.CONNECTED
     assert status.active_endpoint_generation == 1
     assert status.candidate_endpoint_generation is None
     assert manager.get(_PROVIDER_INSTANCE_ID) is first_session
@@ -882,7 +1029,7 @@ async def test_new_generation_can_resolve_version_incompatibility(
     assert session.endpoint_generation == _REPLACEMENT_ENDPOINT_GENERATION
     status = manager.connection_status(_PROVIDER_INSTANCE_ID)
     assert status is not None
-    assert status.state is ProviderConnectionState.AVAILABLE
+    assert status.state is ProviderConnectionState.CONNECTED
 
     await manager.close()
     await incompatible_server.stop()
@@ -913,7 +1060,7 @@ async def test_incompatible_replacement_preserves_older_session(
     assert manager.get(_PROVIDER_INSTANCE_ID) is existing_session
     status = manager.connection_status(_PROVIDER_INSTANCE_ID)
     assert status is not None
-    assert status.state is ProviderConnectionState.AVAILABLE
+    assert status.state is ProviderConnectionState.CONNECTED
     assert status.active_endpoint_generation == 1
 
     await compatible_server.stop()
@@ -983,8 +1130,12 @@ async def test_provider_rejects_request_identity_mismatch(
             "provider_runtime_id must be a canonical UUIDv4",
         ),
         (
-            _HandshakeResponseOverrides(session_id="not-a-uuid"),
-            "session_id must be a canonical UUIDv4",
+            _HandshakeResponseOverrides(session_id=""),
+            "session_id must contain 1-255 Unicode code points",
+        ),
+        (
+            _HandshakeResponseOverrides(session_id="x" * 256),
+            "session_id must contain 1-255 Unicode code points",
         ),
     ],
 )
