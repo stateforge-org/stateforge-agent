@@ -1,0 +1,57 @@
+name: Assert Provider manifest exchange
+description: Wait until the installed Agent accepts a Provider manifest.
+
+inputs:
+  container-name:
+    description: Fedora system-test container running Agent and Provider.
+    required: false
+    default: stateforge-agent-system-test
+  provider-instance-id:
+    description: Provider installation identity returned by the start action.
+    required: true
+  evidence-directory:
+    description: Host directory receiving the manifest assertion record.
+    required: false
+    default: dist/agent-system-test-evidence
+  timeout-seconds:
+    description: Maximum time to wait for Agent acceptance.
+    required: false
+    default: "60"
+
+runs:
+  using: composite
+  steps:
+    - name: Assert accepted manifest session
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+        PROVIDER_INSTANCE_ID: ${{ inputs.provider-instance-id }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+      run: |
+        mkdir -p "${EVIDENCE_DIRECTORY}"
+        deadline=$((SECONDS + TIMEOUT_SECONDS))
+        while (( SECONDS < deadline )); do
+          journal="$(docker exec "${CONTAINER_NAME}" \
+            journalctl -u stateforge-agent.service --no-pager -o cat)"
+          if grep -F 'Rejecting Provider manifest:' <<< "${journal}" \
+            | grep -Fq "provider_instance_id=${PROVIDER_INSTANCE_ID}"; then
+            printf 'Agent rejected Provider manifest %s.\n' \
+              "${PROVIDER_INSTANCE_ID}" >&2
+            exit 1
+          fi
+          if grep -F 'SFP session established:' <<< "${journal}" \
+            | grep -Fq "provider_instance_id=${PROVIDER_INSTANCE_ID}"; then
+            printf '%s\n' \
+              "Manifest accepted for ${PROVIDER_INSTANCE_ID}." \
+              > "${EVIDENCE_DIRECTORY}/manifest-assertion.txt"
+            exit 0
+          fi
+          sleep 1
+        done
+
+        docker exec "${CONTAINER_NAME}" \
+          journalctl -u stateforge-agent.service --no-pager || true
+        printf 'Agent did not accept Provider manifest %s.\n' \
+          "${PROVIDER_INSTANCE_ID}" >&2
+        exit 1

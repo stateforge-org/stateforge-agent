@@ -1,0 +1,59 @@
+name: RPM / Build
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: Name used to publish the RPM build artifact.
+        required: false
+        type: string
+        default: stateforge-agent-rpm
+      retention-days:
+        description: Number of days to retain the build artifact.
+        required: false
+        type: number
+        default: 14
+    outputs:
+      artifact-name:
+        description: Artifact containing RPMs, checksums, and metadata.
+        value: ${{ jobs.build.outputs.artifact-name }}
+      version:
+        description: Version embedded in the RPM.
+        value: ${{ jobs.build.outputs.version }}
+      rpm-sha256:
+        description: SHA-256 digest of the binary RPM.
+        value: ${{ jobs.build.outputs.rpm-sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build RPM once
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact-name: ${{ inputs.artifact-name }}
+      version: ${{ steps.rpm.outputs.version }}
+      rpm-sha256: ${{ steps.rpm.outputs.rpm-sha256 }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build RPM
+        id: rpm
+        uses: ./.github/actions/rpm/build
+
+      - name: Upload immutable build output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            dist/rpm/*.rpm
+            dist/rpm/SHA256SUMS
+            dist/rpm/build-metadata.json
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}
+          compression-level: 0

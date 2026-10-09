@@ -1,0 +1,30 @@
+name: RPM CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - mvp/implementation
+  push:
+    branches:
+      - main
+      - mvp/implementation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpm-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rpm:
+    name: Build and test RPM
+    uses: ./.github/workflows/rpm-build-and-test.yml
+    with:
+      artifact-name: stateforge-agent-rpm-${{ github.run_id }}
+      retention-days: 7
+    secrets:
+      source_app_id: ${{ secrets.STATEFORGE_CI_APP_ID }}
+      source_private_key: ${{ secrets.STATEFORGE_CI_PRIVATE_KEY }}

@@ -1,0 +1,74 @@
+name: Collect Agent system-test evidence
+description: Capture bounded service evidence, uninstall the RPM, and clean up.
+
+inputs:
+  container-name:
+    description: Fedora system-test container to inspect and remove.
+    required: false
+    default: stateforge-agent-system-test
+  evidence-directory:
+    description: Host directory receiving sanitized test evidence.
+    required: false
+    default: dist/agent-system-test-evidence
+
+outputs:
+  evidence-directory:
+    description: Absolute host evidence directory.
+    value: ${{ steps.collect.outputs.evidence-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Collect evidence and clean up
+      id: collect
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        mkdir -p "${EVIDENCE_DIRECTORY}"
+        evidence_directory="$(cd -- "${EVIDENCE_DIRECTORY}" && pwd -P)"
+        printf 'evidence-directory=%s\n' "${evidence_directory}" \
+          >> "${GITHUB_OUTPUT}"
+
+        if ! docker inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+          printf 'System-test container was not created.\n' \
+            > "${EVIDENCE_DIRECTORY}/container-missing.txt"
+          exit 0
+        fi
+
+        docker inspect "${CONTAINER_NAME}" \
+          > "${EVIDENCE_DIRECTORY}/container-inspect.json" 2>&1 || true
+        docker logs "${CONTAINER_NAME}" \
+          > "${EVIDENCE_DIRECTORY}/container.log" 2>&1 || true
+        docker exec "${CONTAINER_NAME}" \
+          systemctl status stateforge-agent.service --no-pager \
+          > "${EVIDENCE_DIRECTORY}/agent-service-status.txt" 2>&1 || true
+        docker exec "${CONTAINER_NAME}" \
+          journalctl -u stateforge-agent.service --no-pager -n 500 \
+          > "${EVIDENCE_DIRECTORY}/agent-journal.txt" 2>&1 || true
+        docker exec "${CONTAINER_NAME}" bash -lc \
+          "journalctl --no-pager -n 500 -u 'stateforge-test-*'" \
+          > "${EVIDENCE_DIRECTORY}/provider-journal.txt" 2>&1 || true
+        docker exec "${CONTAINER_NAME}" ps -ef \
+          > "${EVIDENCE_DIRECTORY}/processes.txt" 2>&1 || true
+        docker exec "${CONTAINER_NAME}" bash -lc \
+          'find /run/stateforge-agent/providers -maxdepth 1 -type f -name "*.sfp.json" -print -exec cat {} \;' \
+          > "${EVIDENCE_DIRECTORY}/provider-descriptors.txt" 2>&1 || true
+        docker exec "${CONTAINER_NAME}" rpm -V --nodeps stateforge-agent \
+          > "${EVIDENCE_DIRECTORY}/rpm-final-verify.txt" 2>&1 || true
+
+        status=0
+        docker exec "${CONTAINER_NAME}" \
+          systemctl stop 'stateforge-test-*' stateforge-agent.service \
+          > "${EVIDENCE_DIRECTORY}/service-stop.txt" 2>&1 || true
+        docker exec "${CONTAINER_NAME}" rpm -e stateforge-agent \
+          > "${EVIDENCE_DIRECTORY}/rpm-remove.txt" 2>&1 || status=$?
+        if docker exec "${CONTAINER_NAME}" \
+          test -e /usr/bin/stateforge-agent; then
+          printf 'RPM removal left /usr/bin/stateforge-agent behind.\n' \
+            >> "${EVIDENCE_DIRECTORY}/rpm-remove.txt"
+          status=1
+        fi
+        docker rm --force "${CONTAINER_NAME}" >/dev/null 2>&1 || status=1
+        exit "${status}"

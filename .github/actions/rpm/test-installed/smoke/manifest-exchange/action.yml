@@ -1,0 +1,65 @@
+name: Test installed manifest exchange
+description: Verify that the RPM-installed Agent accepts one public-API Provider manifest.
+
+inputs:
+  repository-token:
+    description: Short-lived token for unpublished dependency repositories.
+    required: true
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario's evidence.
+    required: false
+    default: dist/agent-system-test-evidence/manifest-exchange
+  provider-ref:
+    description: Provider revision used to build the dummy Provider wheel.
+    required: false
+    default: mvp/implementation
+  protocol-ref:
+    description: Protocol revision shared by the Agent and Provider.
+    required: false
+    default: mvp/implementation
+
+outputs:
+  evidence-directory:
+    description: Absolute directory containing scenario evidence.
+    value: ${{ steps.cleanup.outputs.evidence-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare installed Agent
+      id: setup
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        repository-token: ${{ inputs.repository-token }}
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+        fixture: manifest
+        provider-ref: ${{ inputs.provider-ref }}
+        protocol-ref: ${{ inputs.protocol-ref }}
+
+    - name: Start Provider fixture
+      id: provider
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+
+    - name: Assert Provider manifest exchange
+      uses: ./.github/actions/provider/assert-manifest
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Preserve evidence and clean up
+      id: cleanup
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        container-name: stateforge-agent-system-test
+        evidence-directory: ${{ inputs.evidence-directory }}

@@ -1,0 +1,73 @@
+name: Prepare an installed-Agent scenario
+description: Build fixture packages, install the RPM, and start the packaged Agent.
+
+inputs:
+  repository-token:
+    description: Short-lived token for unpublished dependency repositories.
+    required: true
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving installed-system evidence.
+    required: false
+    default: dist/agent-system-test-evidence
+  fixture:
+    description: Provider fixture prepared for the scenario.
+    required: false
+    default: manifest
+  provider-ref:
+    description: Provider revision used to build the fixture wheel.
+    required: false
+    default: mvp/implementation
+  protocol-ref:
+    description: Protocol revision shared by the Agent and Provider.
+    required: false
+    default: mvp/implementation
+
+outputs:
+  container-name:
+    description: Fedora container running the installed Agent.
+    value: ${{ steps.agent.outputs.container-name }}
+  fixture-path:
+    description: Prepared Provider fixture entry point.
+    value: ${{ steps.fixture.outputs.fixture-path }}
+  wheel-directory:
+    description: Directory containing the Provider and Protocol wheels.
+    value: ${{ steps.fixture.outputs.wheel-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build Provider fixture wheels
+      id: fixture
+      uses: ./.github/actions/provider/create-fixture
+      with:
+        repository-token: ${{ inputs.repository-token }}
+        fixture: ${{ inputs.fixture }}
+        provider-ref: ${{ inputs.provider-ref }}
+        protocol-ref: ${{ inputs.protocol-ref }}
+
+    - name: Preserve dependency provenance
+      shell: bash
+      env:
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+        PROVENANCE_PATH: ${{ steps.fixture.outputs.provenance-path }}
+      run: |
+        mkdir -p "${EVIDENCE_DIRECTORY}"
+        install -m 0644 "${PROVENANCE_PATH}" \
+          "${EVIDENCE_DIRECTORY}/dependency-provenance.json"
+
+    - name: Install Agent RPM
+      id: agent
+      uses: ./.github/actions/agent/install
+      with:
+        rpm-directory: ${{ inputs.rpm-directory }}
+        dependency-wheel-directory: ${{ steps.fixture.outputs.wheel-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Start Agent service
+      uses: ./.github/actions/agent/start
+      with:
+        container-name: ${{ steps.agent.outputs.container-name }}

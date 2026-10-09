@@ -1,0 +1,120 @@
+name: RPM / Installed Agent and Provider test
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: RPM artifact produced by rpm-build.yml.
+        required: true
+        type: string
+      evidence-name:
+        description: Name used to publish installed-system evidence.
+        required: false
+        type: string
+        default: stateforge-agent-system-test-evidence
+      provider-ref:
+        description: Provider revision used by the dummy Provider.
+        required: false
+        type: string
+        default: mvp/implementation
+      protocol-ref:
+        description: Protocol revision shared by Agent and Provider.
+        required: false
+        type: string
+        default: mvp/implementation
+      retention-days:
+        description: Number of days to retain installed-system evidence.
+        required: false
+        type: number
+        default: 14
+    secrets:
+      source_app_id:
+        description: GitHub App ID with read access to dependency sources.
+        required: true
+      source_private_key:
+        description: Private key for the dependency-source GitHub App.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  scenario:
+    name: Installed / ${{ matrix.scenario }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - manifest-exchange
+          - multiple-providers
+          - invalid-descriptor
+          - uninstall-reinstall
+    steps:
+      - name: Check out test automation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Mint dependency source token
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.source_app_id }}
+          private-key: ${{ secrets.source_private_key }}
+          owner: stateforge-org
+          repositories: |
+            stateforge-protocol
+            stateforge-provider-implemntation
+
+      - name: Download exact RPM build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/rpm
+
+      - name: Run manifest-exchange scenario
+        if: ${{ matrix.scenario == 'manifest-exchange' }}
+        uses: ./.github/actions/rpm/test-installed/smoke/manifest-exchange
+        with:
+          repository-token: ${{ steps.source-token.outputs.token }}
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          provider-ref: ${{ inputs.provider-ref }}
+          protocol-ref: ${{ inputs.protocol-ref }}
+
+      - name: Run multiple-Providers scenario
+        if: ${{ matrix.scenario == 'multiple-providers' }}
+        uses: ./.github/actions/rpm/test-installed/lifecycle/multiple-providers
+        with:
+          repository-token: ${{ steps.source-token.outputs.token }}
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          provider-ref: ${{ inputs.provider-ref }}
+          protocol-ref: ${{ inputs.protocol-ref }}
+
+      - name: Run invalid-descriptor scenario
+        if: ${{ matrix.scenario == 'invalid-descriptor' }}
+        uses: ./.github/actions/rpm/test-installed/adversarial/invalid-descriptor
+        with:
+          repository-token: ${{ steps.source-token.outputs.token }}
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          provider-ref: ${{ inputs.provider-ref }}
+          protocol-ref: ${{ inputs.protocol-ref }}
+
+      - name: Run uninstall-reinstall scenario
+        if: ${{ matrix.scenario == 'uninstall-reinstall' }}
+        uses: ./.github/actions/rpm/test-installed/destructive/uninstall-reinstall
+        with:
+          repository-token: ${{ steps.source-token.outputs.token }}
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          provider-ref: ${{ inputs.provider-ref }}
+          protocol-ref: ${{ inputs.protocol-ref }}
+
+      - name: Upload installed-system evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.evidence-name }}-${{ matrix.scenario }}
+          path: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          if-no-files-found: warn
+          retention-days: ${{ inputs.retention-days }}

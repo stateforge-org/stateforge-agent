@@ -1,0 +1,65 @@
+name: RPM / Build and test
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: Name of the RPM artifact passed between jobs.
+        required: false
+        type: string
+        default: stateforge-agent-rpm
+      retention-days:
+        description: Number of days to retain RPMs and evidence.
+        required: false
+        type: number
+        default: 14
+      provider-ref:
+        description: Provider revision used by the dummy Provider.
+        required: false
+        type: string
+        default: mvp/implementation
+      protocol-ref:
+        description: Protocol revision shared by Agent and Provider.
+        required: false
+        type: string
+        default: mvp/implementation
+    secrets:
+      source_app_id:
+        description: GitHub App ID with read access to dependency sources.
+        required: true
+      source_private_key:
+        description: Private key for the dependency-source GitHub App.
+        required: true
+    outputs:
+      artifact-name:
+        description: Tested RPM artifact, suitable for a later publish job.
+        value: ${{ jobs.build.outputs.artifact-name }}
+      version:
+        description: Version embedded in the tested RPM.
+        value: ${{ jobs.build.outputs.version }}
+      rpm-sha256:
+        description: SHA-256 digest of the tested binary RPM.
+        value: ${{ jobs.build.outputs.rpm-sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/rpm-build.yml
+    with:
+      artifact-name: ${{ inputs.artifact-name }}
+      retention-days: ${{ inputs.retention-days }}
+
+  test:
+    needs: build
+    uses: ./.github/workflows/rpm-installed-test.yml
+    with:
+      artifact-name: ${{ needs.build.outputs.artifact-name }}
+      evidence-name: stateforge-agent-system-test-${{ github.run_id }}
+      provider-ref: ${{ inputs.provider-ref }}
+      protocol-ref: ${{ inputs.protocol-ref }}
+      retention-days: ${{ inputs.retention-days }}
+    secrets:
+      source_app_id: ${{ secrets.source_app_id }}
+      source_private_key: ${{ secrets.source_private_key }}

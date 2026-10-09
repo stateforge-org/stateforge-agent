@@ -1,0 +1,127 @@
+name: Start Provider fixture
+description: Install Provider wheels and run a dummy Provider as a non-root service.
+
+inputs:
+  container-name:
+    description: Fedora system-test container running the Agent.
+    required: false
+    default: stateforge-agent-system-test
+  fixture-path:
+    description: Python Provider fixture produced by create-fixture.
+    required: true
+  wheel-directory:
+    description: Provider and Protocol wheels produced by create-fixture.
+    required: true
+  provider-name:
+    description: Safe name used for the fixture user, unit, and state directory.
+    required: false
+    default: provider-a
+  provider-identity:
+    description: Manifest identity declared by the dummy Provider.
+    required: false
+    default: stateforge.test.manifest
+  timeout-seconds:
+    description: Maximum time to wait for endpoint publication.
+    required: false
+    default: "60"
+
+outputs:
+  provider-instance-id:
+    description: Stable Provider installation identity allocated by the runtime.
+    value: ${{ steps.start.outputs.provider-instance-id }}
+  endpoint-generation:
+    description: Endpoint generation published by this Provider process.
+    value: ${{ steps.start.outputs.endpoint-generation }}
+  unit-name:
+    description: Transient systemd unit running the Provider fixture.
+    value: ${{ steps.start.outputs.unit-name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Start independent Provider process
+      id: start
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        FIXTURE_PATH: ${{ inputs.fixture-path }}
+        PROVIDER_IDENTITY: ${{ inputs.provider-identity }}
+        PROVIDER_NAME: ${{ inputs.provider-name }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+        WHEEL_DIRECTORY: ${{ inputs.wheel-directory }}
+      run: |
+        if [[ ! "${PROVIDER_NAME}" =~ ^[a-z][a-z0-9-]{0,20}$ ]]; then
+          printf 'Unsafe Provider fixture name: %s\n' "${PROVIDER_NAME}" >&2
+          exit 2
+        fi
+        fixture_root="/opt/stateforge-fixtures/${PROVIDER_NAME}"
+        state_directory="/var/lib/stateforge-provider-fixtures/${PROVIDER_NAME}"
+        service_user="sf-${PROVIDER_NAME}"
+        unit_name="stateforge-test-${PROVIDER_NAME}.service"
+
+        docker exec "${CONTAINER_NAME}" mkdir -p \
+          "${fixture_root}/wheels" "${state_directory}"
+        docker cp "${FIXTURE_PATH}" \
+          "${CONTAINER_NAME}:${fixture_root}/provider.py"
+        docker cp "${WHEEL_DIRECTORY}/." \
+          "${CONTAINER_NAME}:${fixture_root}/wheels/"
+        docker exec "${CONTAINER_NAME}" bash -lc \
+          "python3 -m pip install --no-cache-dir --break-system-packages --prefix /usr ${fixture_root}/wheels/stateforge_provider_implementation-*.whl"
+        if ! docker exec "${CONTAINER_NAME}" id "${service_user}" \
+          >/dev/null 2>&1; then
+          docker exec "${CONTAINER_NAME}" \
+            useradd --system --no-create-home \
+              --groups stateforge-providers "${service_user}"
+        fi
+        docker exec "${CONTAINER_NAME}" chown -R \
+          "${service_user}:${service_user}" "${state_directory}"
+        docker exec "${CONTAINER_NAME}" chmod 0700 "${state_directory}"
+        docker exec "${CONTAINER_NAME}" chmod -R a+rX "${fixture_root}"
+
+        docker exec "${CONTAINER_NAME}" systemd-run \
+          --unit "${unit_name}" \
+          --property "User=${service_user}" \
+          --property "Group=${service_user}" \
+          --property "SupplementaryGroups=stateforge-providers" \
+          --property "WorkingDirectory=${fixture_root}" \
+          --setenv \
+            "STATEFORGE_TEST_PROVIDER_IDENTITY=${PROVIDER_IDENTITY}" \
+          --setenv \
+            "STATEFORGE_TEST_PROVIDER_DISPLAY_NAME=Fixture ${PROVIDER_NAME}" \
+          --setenv \
+            "STATEFORGE_TEST_DISCOVERY_DIRECTORY=/run/stateforge-agent/providers" \
+          --setenv \
+            "STATEFORGE_TEST_STATE_DIRECTORY=${state_directory}" \
+          /usr/bin/python3 "${fixture_root}/provider.py"
+
+        identity_path="${state_directory}/identity.json"
+        deadline=$((SECONDS + TIMEOUT_SECONDS))
+        while (( SECONDS < deadline )); do
+          if docker exec "${CONTAINER_NAME}" test -f "${identity_path}"; then
+            provider_instance_id="$(docker exec "${CONTAINER_NAME}" \
+              jq -r .provider_instance_id "${identity_path}")"
+            endpoint_generation="$(docker exec "${CONTAINER_NAME}" \
+              jq -r .last_endpoint_generation "${identity_path}")"
+            descriptor="/run/stateforge-agent/providers/${provider_instance_id}.sfp.json"
+            if docker exec "${CONTAINER_NAME}" test -f "${descriptor}"; then
+              {
+                printf 'provider-instance-id=%s\n' "${provider_instance_id}"
+                printf 'endpoint-generation=%s\n' "${endpoint_generation}"
+                printf 'unit-name=%s\n' "${unit_name}"
+              } >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          fi
+          if ! docker exec "${CONTAINER_NAME}" \
+            systemctl is-active --quiet "${unit_name}"; then
+            break
+          fi
+          sleep 1
+        done
+
+        docker exec "${CONTAINER_NAME}" \
+          systemctl status "${unit_name}" --no-pager || true
+        docker exec "${CONTAINER_NAME}" \
+          journalctl -u "${unit_name}" --no-pager || true
+        printf 'Provider fixture did not publish its endpoint.\n' >&2
+        exit 1

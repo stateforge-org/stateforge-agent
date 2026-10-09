@@ -1,0 +1,88 @@
+name: Test RPM uninstall and reinstall
+description: Verify a clean installation still works after removing the tested RPM.
+
+inputs:
+  repository-token:
+    description: Short-lived token for unpublished dependency repositories.
+    required: true
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario's evidence.
+    required: false
+    default: dist/agent-system-test-evidence/uninstall-reinstall
+  provider-ref:
+    description: Provider revision used to build the fixture wheel.
+    required: false
+    default: mvp/implementation
+  protocol-ref:
+    description: Protocol revision shared by the Agent and Provider.
+    required: false
+    default: mvp/implementation
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare initial installation
+      id: initial
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        repository-token: ${{ inputs.repository-token }}
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}/initial
+        provider-ref: ${{ inputs.provider-ref }}
+        protocol-ref: ${{ inputs.protocol-ref }}
+
+    - name: Start Provider before removal
+      id: initial-provider
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.initial.outputs.container-name }}
+        fixture-path: ${{ steps.initial.outputs.fixture-path }}
+        wheel-directory: ${{ steps.initial.outputs.wheel-directory }}
+
+    - name: Assert manifest before removal
+      uses: ./.github/actions/provider/assert-manifest
+      with:
+        container-name: ${{ steps.initial.outputs.container-name }}
+        provider-instance-id: ${{ steps.initial-provider.outputs.provider-instance-id }}
+        evidence-directory: ${{ inputs.evidence-directory }}/initial
+
+    - name: Uninstall RPM and remove initial environment
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        container-name: ${{ steps.initial.outputs.container-name }}
+        evidence-directory: ${{ inputs.evidence-directory }}/initial
+
+    - name: Prepare clean reinstallation
+      id: reinstalled
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        repository-token: ${{ inputs.repository-token }}
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}/reinstalled
+        provider-ref: ${{ inputs.provider-ref }}
+        protocol-ref: ${{ inputs.protocol-ref }}
+
+    - name: Start Provider after reinstall
+      id: reinstalled-provider
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.reinstalled.outputs.container-name }}
+        fixture-path: ${{ steps.reinstalled.outputs.fixture-path }}
+        wheel-directory: ${{ steps.reinstalled.outputs.wheel-directory }}
+
+    - name: Assert manifest after reinstall
+      uses: ./.github/actions/provider/assert-manifest
+      with:
+        container-name: ${{ steps.reinstalled.outputs.container-name }}
+        provider-instance-id: ${{ steps.reinstalled-provider.outputs.provider-instance-id }}
+        evidence-directory: ${{ inputs.evidence-directory }}/reinstalled
+
+    - name: Preserve final evidence and clean up
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        evidence-directory: ${{ inputs.evidence-directory }}/reinstalled

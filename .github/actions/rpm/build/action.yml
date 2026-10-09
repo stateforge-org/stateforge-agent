@@ -1,0 +1,45 @@
+name: Build StateForge Agent RPM
+description: Build the Agent RPMs, checksums, and machine-readable metadata.
+
+inputs:
+  output-directory:
+    description: Directory that receives the build outputs.
+    required: false
+    default: dist/rpm
+  container-image:
+    description: Local tag for the Fedora RPM builder image.
+    required: false
+    default: stateforge-agent-rpm-builder:fedora42
+
+outputs:
+  rpm-path:
+    description: Absolute path to the binary RPM.
+    value: ${{ steps.build.outputs.rpm-path }}
+  source-rpm-path:
+    description: Absolute path to the source RPM.
+    value: ${{ steps.build.outputs.source-rpm-path }}
+  metadata-path:
+    description: Absolute path to the machine-readable build metadata.
+    value: ${{ steps.build.outputs.metadata-path }}
+  version:
+    description: Version embedded in the RPM.
+    value: ${{ steps.build.outputs.version }}
+  rpm-sha256:
+    description: SHA-256 digest of the binary RPM.
+    value: ${{ steps.build.outputs.rpm-sha256 }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build RPM in Fedora
+      id: build
+      shell: bash
+      env:
+        INPUT_OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+        INPUT_CONTAINER_IMAGE: ${{ inputs.container-image }}
+      run: |
+        arguments=(
+          --output-directory "${INPUT_OUTPUT_DIRECTORY}"
+          --container-image "${INPUT_CONTAINER_IMAGE}"
+        )
+        packaging/rpm/build-rpm.sh "${arguments[@]}"
