@@ -16,11 +16,19 @@ The current implementation provides:
 - a long-running foreground daemon;
 - protected local Provider endpoint discovery;
 - validated and reusable local gRPC channels;
-- SFP handshake and version negotiation; and
+- SFP handshake and version negotiation;
+- bounded Provider manifest retrieval, validation, and declaration caching; and
 - bounded reconnection and endpoint replacement.
 
 Providers run as separate processes. They expose vendor-specific behavior over
 SFP, while the Agent remains vendor-independent.
+
+After a successful handshake, the Agent retrieves the Provider's complete
+manifest over the same SFP channel. A Provider is marked connected only after
+the manifest passes the negotiated schema, canonical-revision, size, embedded
+JSON Schema, and secret-safety checks. Connected describes the local SFP
+transport and accepted declaration; it does not assert that the Provider or
+its third-party component is operationally healthy.
 
 ## Requirements
 
@@ -79,8 +87,8 @@ mkdocs build --strict
 ```
 
 The test suite includes integration coverage for Provider discovery, channel
-establishment, SFP negotiation, endpoint replacement, connection loss, and
-recovery.
+establishment, SFP negotiation, manifest exchange, endpoint replacement,
+connection loss, and recovery.
 
 ## Documentation
 

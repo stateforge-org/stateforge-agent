@@ -24,8 +24,12 @@ from stateforge_agent._runtime.daemon import (
     _process_events,
 )
 from stateforge_agent._runtime.layout import RuntimeLayout
-from stateforge_agent._runtime.provider_monitor import ProviderDirectoryMonitor
-from stateforge_agent._sfp import SfpConnectionError, SfpVersion
+from stateforge_agent._sfp import (
+    SfpConnectionError,
+    SfpManifestError,
+    SfpVersion,
+)
+from stateforge_agent._sfp._runtime.discovery import ProviderDirectoryMonitor
 
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _EXPECTED_SIGNAL_HANDLERS = 2
@@ -101,7 +105,7 @@ async def test_discovered_descriptor_establishes_session(
         endpoint_generation=1,
         selected_sfp_version=SfpVersion(major=1, minor=0),
         provider_runtime_id=UUID("d81855f6-79ac-4b49-9f1a-c9f0985e7c58"),
-        session_id=UUID("e7ec9509-2e49-4b38-b2f7-6ff79042737d"),
+        session_id="provider-session-1",
     )
     sessions = SimpleNamespace(
         establish=AsyncMock(return_value=session),
@@ -135,6 +139,21 @@ async def test_connection_failure_isolated_to_provider(tmp_path: Path) -> None:
     _write_descriptor(tmp_path)
     sessions = SimpleNamespace(
         establish=AsyncMock(side_effect=SfpConnectionError("unavailable")),
+        remove=AsyncMock(),
+    )
+
+    await _process_events(monitor, sessions, monitor.scan())
+
+    sessions.establish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_manifest_rejection_isolated_to_provider(tmp_path: Path) -> None:
+    monitor = ProviderDirectoryMonitor(tmp_path)
+    monitor.prepare()
+    _write_descriptor(tmp_path)
+    sessions = SimpleNamespace(
+        establish=AsyncMock(side_effect=SfpManifestError("invalid manifest")),
         remove=AsyncMock(),
     )
 

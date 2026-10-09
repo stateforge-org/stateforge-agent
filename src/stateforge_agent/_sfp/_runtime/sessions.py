@@ -13,14 +13,22 @@ from uuid import UUID
 
 import grpc
 
-from stateforge_agent._runtime.provider_descriptor import (
+from stateforge_agent._sfp._runtime.descriptor import (
     ProviderEndpointDescriptor,
 )
-from stateforge_agent._sfp.errors import (
+from stateforge_agent._sfp._runtime.errors import (
     SfpConnectionError,
     SfpIncompatibleError,
+    SfpManifestError,
 )
-from stateforge_agent._sfp.handshake import perform_handshake
+from stateforge_agent._sfp._services.bootstrap.client import perform_handshake
+from stateforge_agent._sfp._services.manifest.client import (
+    ManifestClient,
+    ManifestRetriever,
+)
+from stateforge_agent._sfp._services.manifest.declaration import (
+    ManifestDeclaration,
+)
 from stateforge_agent._sfp.version import SfpVersion
 
 _UUID_VERSION = 4
@@ -40,10 +48,13 @@ class ProviderConnectionState(StrEnum):
     UNAVAILABLE = "unavailable"
     CONNECTING = "connecting"
     HANDSHAKING = "handshaking"
-    AVAILABLE = "available"
+    RETRIEVING_MANIFEST = "retrieving_manifest"
+    CONNECTED = "connected"
     INCOMPATIBLE = "incompatible"
+    MANIFEST_REJECTED = "manifest_rejected"
     REPLACING_CONNECTING = "replacing_connecting"
     REPLACING_HANDSHAKING = "replacing_handshaking"
+    REPLACING_RETRIEVING_MANIFEST = "replacing_retrieving_manifest"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +66,8 @@ class ProviderSession:
     socket_path: Path
     selected_sfp_version: SfpVersion
     provider_runtime_id: UUID
-    session_id: UUID
+    session_id: str
+    manifest: ManifestDeclaration
     _channel: grpc.aio.Channel = field(repr=False, compare=False)
 
 
@@ -92,9 +104,12 @@ class ProviderSessionManager:
         supported_sfp_versions: tuple[SfpVersion, ...],
         channel_ready_timeout_seconds: float = 5.0,
         handshake_timeout_seconds: float = 5.0,
+        manifest_timeout_seconds: float = 5.0,
+        manifest_read_attempts: int = 3,
         reconnect_initial_delay_seconds: float = 1.0,
         reconnect_max_delay_seconds: float = 30.0,
         descriptor_loader: ProviderDescriptorLoader | None = None,
+        manifest_client: ManifestRetriever | None = None,
     ) -> None:
         """Create an empty Provider session registry."""
         if agent_runtime_id.version != _UUID_VERSION:
@@ -111,6 +126,10 @@ class ProviderSessionManager:
             raise ValueError("channel_ready_timeout_seconds must be positive")
         if handshake_timeout_seconds <= 0:
             raise ValueError("handshake_timeout_seconds must be positive")
+        if manifest_timeout_seconds <= 0:
+            raise ValueError("manifest_timeout_seconds must be positive")
+        if manifest_read_attempts <= 0:
+            raise ValueError("manifest_read_attempts must be positive")
         if reconnect_initial_delay_seconds <= 0:
             raise ValueError(
                 "reconnect_initial_delay_seconds must be positive"
@@ -126,6 +145,14 @@ class ProviderSessionManager:
         self._supported_sfp_versions = supported_sfp_versions
         self._channel_ready_timeout_seconds = channel_ready_timeout_seconds
         self._handshake_timeout_seconds = handshake_timeout_seconds
+        self._manifest_client = (
+            manifest_client
+            if manifest_client is not None
+            else ManifestClient(
+                timeout_seconds=manifest_timeout_seconds,
+                read_attempts=manifest_read_attempts,
+            )
+        )
         self._reconnect_initial_delay_seconds = reconnect_initial_delay_seconds
         self._reconnect_max_delay_seconds = reconnect_max_delay_seconds
         self._descriptor_loader = descriptor_loader
@@ -181,6 +208,9 @@ class ProviderSessionManager:
             return await self._establish_once(descriptor)
         except SfpIncompatibleError:
             await self._mark_incompatible(descriptor)
+            raise
+        except SfpManifestError:
+            await self._mark_manifest_rejected(descriptor)
             raise
         except SfpConnectionError:
             await self._schedule_retry(descriptor.provider_instance_id)
@@ -246,7 +276,7 @@ class ProviderSessionManager:
                             candidate_endpoint_generation=None,
                         )
                     else:
-                        provider.connection_status = _available_status(
+                        provider.connection_status = _connected_status(
                             current_session
                         )
             raise
@@ -301,6 +331,14 @@ class ProviderSessionManager:
             supported_sfp_versions=self._supported_sfp_versions,
             timeout_seconds=self._handshake_timeout_seconds,
         )
+        if not await self._mark_retrieving_manifest(descriptor, attempt):
+            return None
+        manifest = await self._manifest_client.retrieve(
+            channel,
+            descriptor,
+            sfp_version=result.selected_sfp_version,
+            session_id=result.session_id,
+        )
         return ProviderSession(
             provider_instance_id=descriptor.provider_instance_id,
             endpoint_generation=descriptor.endpoint_generation,
@@ -308,6 +346,7 @@ class ProviderSessionManager:
             selected_sfp_version=result.selected_sfp_version,
             provider_runtime_id=result.provider_runtime_id,
             session_id=result.session_id,
+            manifest=manifest,
             _channel=channel,
         )
 
@@ -342,7 +381,7 @@ class ProviderSessionManager:
                     replaced_session = current_session
             if attempt_is_current and superseded_session is None:
                 provider.active_session = candidate
-                provider.connection_status = _available_status(candidate)
+                provider.connection_status = _connected_status(candidate)
 
         if not attempt_is_current:
             if superseded_session is None:
@@ -485,6 +524,17 @@ class ProviderSessionManager:
                     )
                     await self._mark_incompatible(descriptor)
                     return
+                except SfpManifestError as error:
+                    _LOGGER.warning(
+                        "Provider manifest rejected: "
+                        "provider_instance_id=%s endpoint_generation=%s "
+                        "error=%s",
+                        provider_instance_id,
+                        descriptor.endpoint_generation,
+                        error,
+                    )
+                    await self._mark_manifest_rejected(descriptor)
+                    return
                 except SfpConnectionError as error:
                     _LOGGER.warning(
                         "Provider reconnect failed: provider_instance_id=%s "
@@ -586,11 +636,32 @@ class ProviderSessionManager:
             )
             current_session = provider.active_session
             if current_session is not None:
-                provider.connection_status = _available_status(current_session)
+                provider.connection_status = _connected_status(current_session)
                 return
             provider.connection_status = ProviderConnectionStatus(
                 provider_instance_id=descriptor.provider_instance_id,
                 state=ProviderConnectionState.INCOMPATIBLE,
+                active_endpoint_generation=None,
+                candidate_endpoint_generation=None,
+            )
+
+    async def _mark_manifest_rejected(
+        self,
+        descriptor: ProviderEndpointDescriptor,
+    ) -> None:
+        """Record rejection unless an older validated session survives."""
+        async with self._lock:
+            provider = self._providers.setdefault(
+                descriptor.provider_instance_id,
+                _ProviderRuntimeState(),
+            )
+            current_session = provider.active_session
+            if current_session is not None:
+                provider.connection_status = _connected_status(current_session)
+                return
+            provider.connection_status = ProviderConnectionStatus(
+                provider_instance_id=descriptor.provider_instance_id,
+                state=ProviderConnectionState.MANIFEST_REJECTED,
                 active_endpoint_generation=None,
                 candidate_endpoint_generation=None,
             )
@@ -644,6 +715,13 @@ class ProviderSessionManager:
                 is ProviderConnectionState.REPLACING_HANDSHAKING
             ):
                 state = ProviderConnectionState.HANDSHAKING
+                candidate_generation = status.candidate_endpoint_generation
+            elif (
+                status is not None
+                and status.state
+                is ProviderConnectionState.REPLACING_RETRIEVING_MANIFEST
+            ):
+                state = ProviderConnectionState.RETRIEVING_MANIFEST
                 candidate_generation = status.candidate_endpoint_generation
             else:
                 state = ProviderConnectionState.UNAVAILABLE
@@ -723,6 +801,34 @@ class ProviderSessionManager:
             )
             return True
 
+    async def _mark_retrieving_manifest(
+        self,
+        descriptor: ProviderEndpointDescriptor,
+        attempt: object,
+    ) -> bool:
+        """Advance the current provisional endpoint to manifest retrieval."""
+        async with self._lock:
+            provider = self._providers.get(descriptor.provider_instance_id)
+            if provider is None or provider.attempt_token is not attempt:
+                return False
+            current_session = provider.active_session
+            state = (
+                ProviderConnectionState.REPLACING_RETRIEVING_MANIFEST
+                if current_session is not None
+                else ProviderConnectionState.RETRIEVING_MANIFEST
+            )
+            provider.connection_status = ProviderConnectionStatus(
+                provider_instance_id=descriptor.provider_instance_id,
+                state=state,
+                active_endpoint_generation=(
+                    current_session.endpoint_generation
+                    if current_session is not None
+                    else None
+                ),
+                candidate_endpoint_generation=descriptor.endpoint_generation,
+            )
+            return True
+
 
 def _matches(
     session: ProviderSession,
@@ -735,11 +841,11 @@ def _matches(
     )
 
 
-def _available_status(session: ProviderSession) -> ProviderConnectionStatus:
-    """Build the stable status exposed for one negotiated session."""
+def _connected_status(session: ProviderSession) -> ProviderConnectionStatus:
+    """Build transport status for one manifest-accepted session."""
     return ProviderConnectionStatus(
         provider_instance_id=session.provider_instance_id,
-        state=ProviderConnectionState.AVAILABLE,
+        state=ProviderConnectionState.CONNECTED,
         active_endpoint_generation=session.endpoint_generation,
         candidate_endpoint_generation=None,
     )

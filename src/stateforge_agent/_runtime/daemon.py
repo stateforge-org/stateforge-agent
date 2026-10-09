@@ -16,22 +16,23 @@ from stateforge_agent._runtime.layout import (
     RuntimeLayout,
 )
 from stateforge_agent._runtime.logging import configure_logging
-from stateforge_agent._runtime.provider_descriptor import (
+from stateforge_agent._sfp import (
+    ProviderSessionManager,
+    SfpConnectionError,
+    SfpManifestError,
+    SfpVersion,
+)
+from stateforge_agent._sfp._runtime.descriptor import (
     PROVIDER_DESCRIPTOR_SUFFIX,
     ProviderDescriptorError,
     ProviderEndpointDescriptor,
     load_provider_descriptor,
 )
-from stateforge_agent._runtime.provider_monitor import (
+from stateforge_agent._sfp._runtime.discovery import (
     ProviderDirectoryError,
     ProviderDirectoryEvent,
     ProviderDirectoryEventKind,
     ProviderDirectoryMonitor,
-)
-from stateforge_agent._sfp import (
-    ProviderSessionManager,
-    SfpConnectionError,
-    SfpVersion,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -153,6 +154,15 @@ async def _process_events(
 
         try:
             session = await sessions.establish(descriptor)
+        except SfpManifestError as error:
+            _LOGGER.warning(
+                "Rejecting Provider manifest: provider_instance_id=%s "
+                "endpoint_generation=%s error=%s",
+                descriptor.provider_instance_id,
+                descriptor.endpoint_generation,
+                error,
+            )
+            continue
         except SfpConnectionError as error:
             _LOGGER.warning(
                 "Cannot establish SFP session: provider_instance_id=%s "

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from watchfiles import awatch
 
-from stateforge_agent._runtime.provider_descriptor import (
+from stateforge_agent._sfp._runtime.descriptor import (
     PROVIDER_DESCRIPTOR_SUFFIX,
 )
 

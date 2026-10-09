@@ -23,4 +23,11 @@ The current runtime can:
 - monitor the Provider discovery directory;
 - validate Provider endpoint descriptors;
 - establish and reuse local gRPC channels; and
-- perform the SFP bootstrap handshake and version negotiation.
+- perform the SFP bootstrap handshake and version negotiation;
+- retrieve and validate the Provider manifest on the negotiated session; and
+- cache accepted, immutable declarations independently of channel lifetime.
+
+The runtime reports a Provider as connected only after both session setup and
+manifest validation succeed. This connection state is intentionally narrower
+than operational availability: health and capability assessment are separate
+procedures and are not inferred from an open channel or accepted manifest.
