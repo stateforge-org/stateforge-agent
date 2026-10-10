@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from stateforge_rpc import Platform, Provider
+from stateforge_provider import Platform, Provider
 
 
 class ManifestFixtureProvider(Provider):

@@ -66,7 +66,7 @@ jobs:
           owner: stateforge-org
           repositories: |
             stateforge-protocol
-            stateforge-provider-implemntation
+            stateforge-provider-python
 
       - name: Download exact RPM build
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
