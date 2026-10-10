@@ -45,7 +45,7 @@ def test_rpm_version_has_one_source_of_truth() -> None:
     )
 
     assert 'version="$(project_version)"' in container_builder
-    assert "--define \"version ${version}\"" in container_builder
+    assert '--define "version ${version}"' in container_builder
     assert "must be defined from pyproject.toml" in spec
     assert "--version" not in host_builder
     assert "inputs.version" not in automation
@@ -65,6 +65,10 @@ def test_installed_test_consumes_rpm_and_packaged_provider_wheels() -> None:
     setup = read(ACTIONS / "rpm" / "test-installed" / "setup" / "action.yml")
     install = read(ACTIONS / "agent" / "install" / "action.yml")
     fixture = read(ACTIONS / "provider" / "create-fixture" / "action.yml")
+    fixture_source = read(
+        ACTIONS / "provider" / "create-fixture" / "fixtures" / "manifest.py"
+    )
+    provider_start = read(ACTIONS / "provider" / "start" / "action.yml")
 
     assert "actions/download-artifact@" in workflow
     assert (
@@ -77,7 +81,10 @@ def test_installed_test_consumes_rpm_and_packaged_provider_wheels() -> None:
     assert "./.github/actions/provider/assert-manifest" in scenario
     assert "rpm -Uvh --nodeps" in install
     assert "python3 -m pip wheel --no-deps" in fixture
-    assert "stateforge-provider-implemntation" in fixture
+    assert "stateforge-provider-python" in fixture
+    assert "stateforge_provider-*.whl" in fixture
+    assert "stateforge_provider-*.whl" in provider_start
+    assert "from stateforge_provider import" in fixture_source
     assert "token: ${{ inputs.repository-token }}" in fixture
 
 
@@ -102,9 +109,7 @@ def test_dependency_refs_are_configurable_and_traceable() -> None:
     for ref in ("provider-ref", "protocol-ref"):
         assert f"{ref}:\n" in release
         assert f"{ref}: ${{{{ inputs.{ref} }}}}" in release
-    assert (
-        release.count("default: mvp/implementation") == DEPENDENCY_COUNT
-    )
+    assert release.count("default: mvp/implementation") == DEPENDENCY_COUNT
     assert (
         "git -C .stateforge-ci/sources/protocol rev-parse --verify HEAD"
         in fixture
@@ -228,8 +233,7 @@ def test_each_installed_scenario_is_an_independent_action() -> None:
     scenarios = sorted(scenario_root.glob("*/*/action.yml"))
 
     tiers = {
-        scenario.relative_to(scenario_root).parts[0]
-        for scenario in scenarios
+        scenario.relative_to(scenario_root).parts[0] for scenario in scenarios
     }
     assert tiers == {"smoke", "lifecycle", "adversarial", "destructive"}
     for scenario in scenarios:

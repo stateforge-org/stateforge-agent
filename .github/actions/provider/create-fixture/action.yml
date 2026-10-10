@@ -16,7 +16,7 @@ inputs:
   provider-repository:
     description: Repository containing the Provider runtime package.
     required: false
-    default: stateforge-org/stateforge-provider-implemntation
+    default: stateforge-org/stateforge-provider-python
   provider-ref:
     description: Provider revision to build; use a commit for reproducible runs.
     required: false
@@ -93,7 +93,7 @@ runs:
         )
         mapfile -t provider_wheels < <(
           find "${OUTPUT_DIRECTORY}/wheels" -maxdepth 1 -type f \
-            -name 'stateforge_provider_implementation-*.whl' -print
+            -name 'stateforge_provider-*.whl' -print
         )
         if (( ${#protocol_wheels[@]} != 1 || ${#provider_wheels[@]} != 1 )); then
           printf 'Expected one Protocol wheel and one Provider wheel.\n' >&2

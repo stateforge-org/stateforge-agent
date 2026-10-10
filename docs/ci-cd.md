@@ -83,7 +83,7 @@ flowchart LR
 No Agent or Provider source directory is mounted into the test system. The
 Agent executable and package must be owned by the RPM. The Provider and
 Protocol are built into wheels before the test because
-`stateforge-provider-implementation` and `stateforge-protocol` are not yet
+`stateforge-provider` and `stateforge-protocol` are not yet
 published to PyPI. Those wheels are installed into the test system; their
 source checkouts are never used as import roots.
 
@@ -91,7 +91,7 @@ Because those source repositories are private, the installed-test workflow
 mints a short-lived installation token from a dedicated GitHub App. Configure
 the repository secrets `STATEFORGE_CI_APP_ID` and
 `STATEFORGE_CI_PRIVATE_KEY`; install that App on only
-`stateforge-protocol` and `stateforge-provider-implemntation` with read-only
+`stateforge-protocol` and `stateforge-provider-python` with read-only
 Contents permission. The token is scoped to those two repositories, is not
 persisted by checkout, and expires automatically. A long-lived personal
 access token is neither required nor accepted by the workflow interface.
@@ -164,7 +164,7 @@ environment cleanup commands.
 
 Add a Python file under
 `.github/actions/provider/create-fixture/fixtures/`. The file must use only
-the public `stateforge_rpc` authoring API and read lifecycle paths from the
+the public `stateforge_provider` authoring API and read lifecycle paths from the
 environment variables supplied by `provider/start`. Select the file through
 the scenario setup action's `fixture` input. No container, service-control, or
 evidence code is required for a normal fixture.

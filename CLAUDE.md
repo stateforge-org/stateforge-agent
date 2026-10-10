@@ -56,7 +56,7 @@ conditions, not permission to implement additional milestones.
 This repository owns the Agent daemon, Agent-side SFP coordination, staging
 workspaces, and BackupEngine tooling. It stays independent of specific
 third-party systems. Protobuf sources belong in `stateforge-protocol`; Provider
-server behavior belongs in `stateforge-provider-implemntation`.
+server behavior belongs in `stateforge-provider-python`.
 
 The Provider and its Developer RPC Library share a process that is separate
 from the Agent. They communicate over one multiplexed local gRPC channel.
