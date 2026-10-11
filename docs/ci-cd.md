@@ -125,7 +125,7 @@ digest of each generated wheel.
 | Action | Responsibility |
 | --- | --- |
 | `rpm/build` | Build binary/source RPMs, checksums, metadata, and exact source provenance from the Agent checkout that owns the action. |
-| `rpm/test-installed/setup` | Validate the prebuilt fixture bundle and prepare a clean RPM-installed Agent for one scenario. |
+| `rpm/test-installed/setup` | Prepare a clean RPM-installed Agent for one scenario. |
 | `rpm/test-installed/<tier>/<scenario>` | Run one isolated installed-system scenario and its assertions. |
 | `rpm/test-installed/cleanup` | Preserve evidence and remove the scenario environment. |
 | `agent/install` | Create clean Fedora, install the exact RPM and dependencies, and verify package ownership. |
