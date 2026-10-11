@@ -21,10 +21,29 @@ def test_rpm_build_has_one_authoritative_command() -> None:
     builder = read(ROOT / "packaging" / "rpm" / "build-inside-container.sh")
 
     assert "packaging/rpm/build-rpm.sh" in build_action
-    assert "./.github/actions/rpm/build" in build_workflow
+    assert ".stateforge-ci/agent/.github/actions/rpm/build" in build_workflow
     assert "rpmbuild" in builder
     assert "rpmbuild" not in build_action
     assert "rpmbuild" not in build_workflow
+
+
+def test_rpm_builder_is_location_independent() -> None:
+    """Build the Agent checkout that owns the invoked action."""
+    action = read(ACTIONS / "rpm" / "build" / "action.yml")
+    workflow = read(WORKFLOWS / "rpm-build.yml")
+    host_builder = read(ROOT / "packaging" / "rpm" / "build-rpm.sh")
+    container_builder = read(
+        ROOT / "packaging" / "rpm" / "build-inside-container.sh"
+    )
+
+    assert "ACTION_PATH: ${{ github.action_path }}" in action
+    assert "${ACTION_PATH}/../../../.." in action
+    assert '"${source_directory}/packaging/rpm/build-rpm.sh"' in action
+    assert 'output_directory="$(mkdir -p' in action
+    assert "path: .stateforge-ci/agent" in workflow
+    assert 'source_sha="$(git -C "${SOURCE_ROOT}"' in host_builder
+    assert '"commit": os.environ["SOURCE_SHA"]' in container_builder
+    assert '"ref": os.environ["SOURCE_REF"]' in container_builder
 
 
 def test_rpm_version_has_one_source_of_truth() -> None:

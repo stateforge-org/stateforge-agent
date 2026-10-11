@@ -82,7 +82,7 @@ write_action_outputs() {
 }
 
 main() {
-    local output_directory
+    local output_directory source_ref source_sha
 
     parse_arguments "$@"
     command -v docker >/dev/null 2>&1 || {
@@ -91,6 +91,11 @@ main() {
     }
     output_directory="$(absolute_directory "${OUTPUT_DIRECTORY}")"
     OUTPUT_DIRECTORY="${output_directory}"
+    source_sha="$(git -C "${SOURCE_ROOT}" rev-parse --verify HEAD)"
+    source_ref="$(
+        git -C "${SOURCE_ROOT}" symbolic-ref --quiet --short HEAD || \
+            printf 'detached'
+    )"
     rm -f -- "${OUTPUT_DIRECTORY}"/*.rpm \
         "${OUTPUT_DIRECTORY}/SHA256SUMS" \
         "${OUTPUT_DIRECTORY}/build-metadata.json"
@@ -102,6 +107,8 @@ main() {
     docker run --rm \
         --env "HOST_UID=$(id -u)" \
         --env "HOST_GID=$(id -g)" \
+        --env "SOURCE_REF=${source_ref}" \
+        --env "SOURCE_SHA=${source_sha}" \
         --mount "type=bind,source=${SOURCE_ROOT},target=/workspace,readonly" \
         --mount "type=bind,source=${OUTPUT_DIRECTORY},target=/output" \
         "${CONTAINER_IMAGE}"

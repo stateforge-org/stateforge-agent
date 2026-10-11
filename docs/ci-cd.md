@@ -115,7 +115,7 @@ digest of each generated wheel.
 
 | Action | Responsibility |
 | --- | --- |
-| `rpm/build` | Build binary/source RPMs, checksums, and metadata. |
+| `rpm/build` | Build binary/source RPMs, checksums, metadata, and exact source provenance from the Agent checkout that owns the action. |
 | `rpm/test-installed/setup` | Prepare a clean RPM-installed Agent for one scenario. |
 | `rpm/test-installed/<tier>/<scenario>` | Run one isolated installed-system scenario and its assertions. |
 | `rpm/test-installed/cleanup` | Preserve evidence and remove the scenario environment. |
@@ -177,6 +177,28 @@ useful outside GitHub Actions:
 ```console
 packaging/rpm/build-rpm.sh
 ```
+
+The RPM action is also safe to invoke from another repository. The consumer
+chooses and checks out the exact Agent revision, then calls the action from
+that checkout. Output paths remain relative to the caller workspace and are
+normalized before the action enters the Agent source tree:
+
+```yaml
+- uses: actions/checkout@<immutable-sha>
+  with:
+    repository: stateforge-org/stateforge-agent
+    ref: <agent-ref-or-commit>
+    path: .stateforge-ci/agent
+    persist-credentials: false
+
+- uses: ./.stateforge-ci/agent/.github/actions/rpm/build
+  with:
+    output-directory: dist/agent-rpm
+```
+
+The resulting `build-metadata.json` records the exact Agent commit and ref.
+Checkout and ref selection deliberately remain the consumer's responsibility;
+the builder always builds the repository snapshot containing the action.
 
 The complete installed-system sequence is intentionally assembled from GitHub
 Actions rather than duplicated in a local Python or shell harness. Each action
