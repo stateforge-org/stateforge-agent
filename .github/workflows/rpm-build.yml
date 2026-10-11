@@ -37,14 +37,15 @@ jobs:
       version: ${{ steps.rpm.outputs.version }}
       rpm-sha256: ${{ steps.rpm.outputs.rpm-sha256 }}
     steps:
-      - name: Check out source
+      - name: Check out Agent source below the caller workspace
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          path: .stateforge-ci/agent
           persist-credentials: false
 
       - name: Build RPM
         id: rpm
-        uses: ./.github/actions/rpm/build
+        uses: ./.stateforge-ci/agent/.github/actions/rpm/build
 
       - name: Upload immutable build output
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

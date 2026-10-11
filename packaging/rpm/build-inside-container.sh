@@ -37,6 +37,8 @@ write_metadata() {
     VERSION="${version}" \
     RPM_PATH="${rpm_path}" \
     SOURCE_RPM_PATH="${source_rpm_path}" \
+    SOURCE_REF="${SOURCE_REF}" \
+    SOURCE_SHA="${SOURCE_SHA}" \
         python3 - <<'PY'
 import hashlib
 import json
@@ -70,6 +72,10 @@ query = subprocess.run(
 metadata = {
     "schema_version": 1,
     "project_version": os.environ["VERSION"],
+    "source": {
+        "commit": os.environ["SOURCE_SHA"],
+        "ref": os.environ["SOURCE_REF"],
+    },
     "rpm": {
         "filename": rpm_path.name,
         "sha256": sha256(rpm_path),
