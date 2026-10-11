@@ -1,5 +1,5 @@
-name: Create Provider fixture
-description: Build Provider and Protocol source revisions into wheels and stage a fixture.
+name: Create Provider fixture bundle
+description: Build dependency revisions through their canonical actions and stage a fixture.
 
 inputs:
   repository-token:
@@ -62,18 +62,24 @@ runs:
         token: ${{ inputs.repository-token }}
         persist-credentials: false
 
-    - name: Build fixture dependencies as wheels
-      id: stage
+    - name: Set up package builder
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.13"
+
+    - name: Install package builder
+      shell: bash
+      run: python -m pip install --disable-pip-version-check "build>=1.2"
+
+    - name: Prepare fixture bundle directories
+      id: prepare
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
         FIXTURE: ${{ inputs.fixture }}
         OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
-        PROVIDER_REF: ${{ inputs.provider-ref }}
-        PROVIDER_REPOSITORY: ${{ inputs.provider-repository }}
-        PROTOCOL_REF: ${{ inputs.protocol-ref }}
-        PROTOCOL_REPOSITORY: ${{ inputs.protocol-repository }}
       run: |
+        set -euo pipefail
         fixture_source="${ACTION_PATH}/fixtures/${FIXTURE}.py"
         if [[ ! -f "${fixture_source}" ]]; then
           printf 'Unknown Provider fixture: %s\n' "${FIXTURE}" >&2
@@ -81,24 +87,58 @@ runs:
         fi
 
         rm -rf -- "${OUTPUT_DIRECTORY}"
-        mkdir -p "${OUTPUT_DIRECTORY}/wheels"
-        python3 -m pip wheel --no-deps \
-          --wheel-dir "${OUTPUT_DIRECTORY}/wheels" \
-          .stateforge-ci/sources/protocol \
-          .stateforge-ci/sources/provider
+        mkdir -p \
+          "${OUTPUT_DIRECTORY}/packages/protocol" \
+          "${OUTPUT_DIRECTORY}/packages/provider" \
+          "${OUTPUT_DIRECTORY}/evidence/protocol" \
+          "${OUTPUT_DIRECTORY}/evidence/provider" \
+          "${OUTPUT_DIRECTORY}/wheels"
+        output_directory="$(cd -- "${OUTPUT_DIRECTORY}" && pwd -P)"
+        {
+          printf 'fixture-source=%s\n' "${fixture_source}"
+          printf 'output-directory=%s\n' "${output_directory}"
+        } >> "${GITHUB_OUTPUT}"
 
-        mapfile -t protocol_wheels < <(
-          find "${OUTPUT_DIRECTORY}/wheels" -maxdepth 1 -type f \
-            -name 'stateforge_protocol-*.whl' -print
+    - name: Build Protocol package through its canonical action
+      id: protocol
+      uses: ./.stateforge-ci/sources/protocol/.github/actions/python/build
+      with:
+        output-directory: ${{ steps.prepare.outputs.output-directory }}/packages/protocol
+        evidence-directory: ${{ steps.prepare.outputs.output-directory }}/evidence/protocol
+
+    - name: Build Provider package through its canonical action
+      id: provider
+      uses: ./.stateforge-ci/sources/provider/.github/actions/package/build
+      with:
+        output-directory: ${{ steps.prepare.outputs.output-directory }}/packages/provider
+        evidence-directory: ${{ steps.prepare.outputs.output-directory }}/evidence/provider
+
+    - name: Stage fixture and package identity
+      id: stage
+      shell: bash
+      env:
+        FIXTURE_SOURCE: ${{ steps.prepare.outputs.fixture-source }}
+        OUTPUT_DIRECTORY: ${{ steps.prepare.outputs.output-directory }}
+        PROVIDER_REF: ${{ inputs.provider-ref }}
+        PROVIDER_REPOSITORY: ${{ inputs.provider-repository }}
+        PROVIDER_WHEEL: ${{ steps.provider.outputs.wheel-path }}
+        PROVIDER_WHEEL_SHA256: ${{ steps.provider.outputs.wheel-sha256 }}
+        PROTOCOL_REF: ${{ inputs.protocol-ref }}
+        PROTOCOL_REPOSITORY: ${{ inputs.protocol-repository }}
+        PROTOCOL_WHEEL: ${{ steps.protocol.outputs.wheel-path }}
+        PROTOCOL_WHEEL_SHA256: ${{ steps.protocol.outputs.wheel-sha256 }}
+      run: |
+        set -euo pipefail
+        (
+          cd -- "${OUTPUT_DIRECTORY}/packages/protocol"
+          sha256sum --check SHA256SUMS
         )
-        mapfile -t provider_wheels < <(
-          find "${OUTPUT_DIRECTORY}/wheels" -maxdepth 1 -type f \
-            -name 'stateforge_provider-*.whl' -print
+        (
+          cd -- "${OUTPUT_DIRECTORY}/packages/provider"
+          sha256sum --check SHA256SUMS
         )
-        if (( ${#protocol_wheels[@]} != 1 || ${#provider_wheels[@]} != 1 )); then
-          printf 'Expected one Protocol wheel and one Provider wheel.\n' >&2
-          exit 1
-        fi
+        install -m 0644 "${PROTOCOL_WHEEL}" "${OUTPUT_DIRECTORY}/wheels/"
+        install -m 0644 "${PROVIDER_WHEEL}" "${OUTPUT_DIRECTORY}/wheels/"
 
         protocol_commit="$(
           git -C .stateforge-ci/sources/protocol rev-parse --verify HEAD
@@ -106,19 +146,17 @@ runs:
         provider_commit="$(
           git -C .stateforge-ci/sources/provider rev-parse --verify HEAD
         )"
-        protocol_sha256="$(sha256sum "${protocol_wheels[0]}" | cut -d ' ' -f 1)"
-        provider_sha256="$(sha256sum "${provider_wheels[0]}" | cut -d ' ' -f 1)"
         jq -n \
           --arg protocol_repository "${PROTOCOL_REPOSITORY}" \
           --arg protocol_ref "${PROTOCOL_REF}" \
           --arg protocol_commit "${protocol_commit}" \
-          --arg protocol_wheel "$(basename -- "${protocol_wheels[0]}")" \
-          --arg protocol_sha256 "${protocol_sha256}" \
+          --arg protocol_wheel "$(basename -- "${PROTOCOL_WHEEL}")" \
+          --arg protocol_sha256 "${PROTOCOL_WHEEL_SHA256}" \
           --arg provider_repository "${PROVIDER_REPOSITORY}" \
           --arg provider_ref "${PROVIDER_REF}" \
           --arg provider_commit "${provider_commit}" \
-          --arg provider_wheel "$(basename -- "${provider_wheels[0]}")" \
-          --arg provider_sha256 "${provider_sha256}" \
+          --arg provider_wheel "$(basename -- "${PROVIDER_WHEEL}")" \
+          --arg provider_sha256 "${PROVIDER_WHEEL_SHA256}" \
           '{
             schema_version: 1,
             dependencies: [
@@ -138,7 +176,7 @@ runs:
               }
             ]
           }' > "${OUTPUT_DIRECTORY}/dependency-provenance.json"
-        install -m 0644 "${fixture_source}" \
+        install -m 0644 "${FIXTURE_SOURCE}" \
           "${OUTPUT_DIRECTORY}/provider.py"
         (
           cd -- "${OUTPUT_DIRECTORY}"

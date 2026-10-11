@@ -57,6 +57,7 @@ jobs:
     with:
       artifact-name: ${{ needs.build.outputs.artifact-name }}
       evidence-name: stateforge-agent-system-test-${{ github.run_id }}
+      fixture-artifact-name: stateforge-provider-fixture-${{ github.run_id }}-${{ github.run_attempt }}
       provider-ref: ${{ inputs.provider-ref }}
       protocol-ref: ${{ inputs.protocol-ref }}
       retention-days: ${{ inputs.retention-days }}

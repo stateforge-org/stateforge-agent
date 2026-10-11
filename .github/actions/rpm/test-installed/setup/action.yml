@@ -1,10 +1,7 @@
 name: Prepare an installed-Agent scenario
-description: Build fixture packages, install the RPM, and start the packaged Agent.
+description: Verify a fixture bundle, install the RPM, and start the packaged Agent.
 
 inputs:
-  repository-token:
-    description: Short-lived token for unpublished dependency repositories.
-    required: true
   rpm-directory:
     description: Directory containing the exact RPM artifact under test.
     required: false
@@ -13,18 +10,10 @@ inputs:
     description: Directory receiving installed-system evidence.
     required: false
     default: dist/agent-system-test-evidence
-  fixture:
-    description: Provider fixture prepared for the scenario.
+  fixture-directory:
+    description: Directory containing the prebuilt Provider fixture bundle.
     required: false
-    default: manifest
-  provider-ref:
-    description: Provider revision used to build the fixture wheel.
-    required: false
-    default: mvp/implementation
-  protocol-ref:
-    description: Protocol revision shared by the Agent and Provider.
-    required: false
-    default: mvp/implementation
+    default: dist/provider-fixture
 
 outputs:
   container-name:
@@ -40,14 +29,43 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Build Provider fixture wheels
+    - name: Verify Provider fixture bundle
       id: fixture
-      uses: ./.github/actions/provider/create-fixture
-      with:
-        repository-token: ${{ inputs.repository-token }}
-        fixture: ${{ inputs.fixture }}
-        provider-ref: ${{ inputs.provider-ref }}
-        protocol-ref: ${{ inputs.protocol-ref }}
+      shell: bash
+      env:
+        FIXTURE_DIRECTORY: ${{ inputs.fixture-directory }}
+      run: |
+        set -euo pipefail
+        if [[ ! -f "${FIXTURE_DIRECTORY}/provider.py" || \
+              ! -f "${FIXTURE_DIRECTORY}/dependency-provenance.json" || \
+              ! -f "${FIXTURE_DIRECTORY}/SHA256SUMS" ]]; then
+          printf 'Provider fixture bundle is incomplete: %s\n' \
+            "${FIXTURE_DIRECTORY}" >&2
+          exit 1
+        fi
+        (
+          cd -- "${FIXTURE_DIRECTORY}"
+          sha256sum --check SHA256SUMS
+        )
+        mapfile -t protocol_wheels < <(
+          find "${FIXTURE_DIRECTORY}/wheels" -maxdepth 1 -type f \
+            -name 'stateforge_protocol-*.whl' -print
+        )
+        mapfile -t provider_wheels < <(
+          find "${FIXTURE_DIRECTORY}/wheels" -maxdepth 1 -type f \
+            -name 'stateforge_provider-*.whl' -print
+        )
+        if (( ${#protocol_wheels[@]} != 1 || ${#provider_wheels[@]} != 1 )); then
+          printf 'Expected one Protocol wheel and one Provider wheel.\n' >&2
+          exit 1
+        fi
+        fixture_directory="$(cd -- "${FIXTURE_DIRECTORY}" && pwd -P)"
+        {
+          printf 'fixture-path=%s/provider.py\n' "${fixture_directory}"
+          printf 'provenance-path=%s/dependency-provenance.json\n' \
+            "${fixture_directory}"
+          printf 'wheel-directory=%s/wheels\n' "${fixture_directory}"
+        } >> "${GITHUB_OUTPUT}"
 
     - name: Preserve dependency provenance
       shell: bash

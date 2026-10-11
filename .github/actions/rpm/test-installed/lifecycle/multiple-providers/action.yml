@@ -2,9 +2,6 @@ name: Test multiple installed Providers
 description: Verify that the RPM-installed Agent accepts two independent Providers.
 
 inputs:
-  repository-token:
-    description: Short-lived token for unpublished dependency repositories.
-    required: true
   rpm-directory:
     description: Directory containing the exact RPM artifact under test.
     required: false
@@ -13,14 +10,10 @@ inputs:
     description: Directory receiving this scenario's evidence.
     required: false
     default: dist/agent-system-test-evidence/multiple-providers
-  provider-ref:
-    description: Provider revision used to build the fixture wheel.
+  fixture-directory:
+    description: Directory containing the prebuilt Provider fixture bundle.
     required: false
-    default: mvp/implementation
-  protocol-ref:
-    description: Protocol revision shared by the Agent and Providers.
-    required: false
-    default: mvp/implementation
+    default: dist/provider-fixture
 
 runs:
   using: composite
@@ -29,11 +22,9 @@ runs:
       id: setup
       uses: ./.github/actions/rpm/test-installed/setup
       with:
-        repository-token: ${{ inputs.repository-token }}
         rpm-directory: ${{ inputs.rpm-directory }}
         evidence-directory: ${{ inputs.evidence-directory }}
-        provider-ref: ${{ inputs.provider-ref }}
-        protocol-ref: ${{ inputs.protocol-ref }}
+        fixture-directory: ${{ inputs.fixture-directory }}
 
     - name: Start first Provider
       id: provider-a

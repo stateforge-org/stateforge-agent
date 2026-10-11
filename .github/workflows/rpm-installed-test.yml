@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: stateforge-agent-system-test-evidence
+      fixture-artifact-name:
+        description: Name used to transfer the immutable Provider fixture bundle.
+        required: false
+        type: string
+        default: stateforge-provider-fixture
       provider-ref:
         description: Provider revision used by the dummy Provider.
         required: false
@@ -39,18 +44,10 @@ permissions:
   contents: read
 
 jobs:
-  scenario:
-    name: Installed / ${{ matrix.scenario }}
+  fixture:
+    name: Build Provider fixture bundle
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        scenario:
-          - manifest-exchange
-          - multiple-providers
-          - invalid-descriptor
-          - uninstall-reinstall
+    timeout-minutes: 20
     steps:
       - name: Check out test automation
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -67,6 +64,42 @@ jobs:
           repositories: |
             stateforge-protocol
             stateforge-provider-python
+          permission-contents: read
+
+      - name: Build dependency packages and stage fixture
+        uses: ./.github/actions/provider/create-fixture
+        with:
+          repository-token: ${{ steps.source-token.outputs.token }}
+          provider-ref: ${{ inputs.provider-ref }}
+          protocol-ref: ${{ inputs.protocol-ref }}
+
+      - name: Upload immutable Provider fixture bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.fixture-artifact-name }}
+          path: dist/provider-fixture
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}
+          compression-level: 0
+
+  scenario:
+    name: Installed / ${{ matrix.scenario }}
+    needs: fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - manifest-exchange
+          - multiple-providers
+          - invalid-descriptor
+          - uninstall-reinstall
+    steps:
+      - name: Check out test automation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Download exact RPM build
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -74,41 +107,39 @@ jobs:
           name: ${{ inputs.artifact-name }}
           path: dist/rpm
 
+      - name: Download exact Provider fixture bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.fixture-artifact-name }}
+          path: dist/provider-fixture
+
       - name: Run manifest-exchange scenario
         if: ${{ matrix.scenario == 'manifest-exchange' }}
         uses: ./.github/actions/rpm/test-installed/smoke/manifest-exchange
         with:
-          repository-token: ${{ steps.source-token.outputs.token }}
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
-          provider-ref: ${{ inputs.provider-ref }}
-          protocol-ref: ${{ inputs.protocol-ref }}
+          fixture-directory: dist/provider-fixture
 
       - name: Run multiple-Providers scenario
         if: ${{ matrix.scenario == 'multiple-providers' }}
         uses: ./.github/actions/rpm/test-installed/lifecycle/multiple-providers
         with:
-          repository-token: ${{ steps.source-token.outputs.token }}
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
-          provider-ref: ${{ inputs.provider-ref }}
-          protocol-ref: ${{ inputs.protocol-ref }}
+          fixture-directory: dist/provider-fixture
 
       - name: Run invalid-descriptor scenario
         if: ${{ matrix.scenario == 'invalid-descriptor' }}
         uses: ./.github/actions/rpm/test-installed/adversarial/invalid-descriptor
         with:
-          repository-token: ${{ steps.source-token.outputs.token }}
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
-          provider-ref: ${{ inputs.provider-ref }}
-          protocol-ref: ${{ inputs.protocol-ref }}
+          fixture-directory: dist/provider-fixture
 
       - name: Run uninstall-reinstall scenario
         if: ${{ matrix.scenario == 'uninstall-reinstall' }}
         uses: ./.github/actions/rpm/test-installed/destructive/uninstall-reinstall
         with:
-          repository-token: ${{ steps.source-token.outputs.token }}
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
-          provider-ref: ${{ inputs.provider-ref }}
-          protocol-ref: ${{ inputs.protocol-ref }}
+          fixture-directory: dist/provider-fixture
 
       - name: Upload installed-system evidence
         if: ${{ always() }}
