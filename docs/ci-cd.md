@@ -47,21 +47,24 @@ library.
 
 ## Installed-system path
 
-The RPM is built once. The installed-system job downloads those exact bytes,
-then performs this sequence:
+The RPM, Protocol package, and Provider package are each built once through
+the build action owned by their repository. The installed-system matrix
+downloads those exact bytes, then performs this sequence:
 
-1. Build wheels for the selected Protocol and Provider revisions.
-2. Start a clean Fedora systemd container with no source checkout mounted.
-3. Verify and install the Agent RPM.
-4. Install the matching Protocol wheel and third-party runtime dependencies.
-5. Start the packaged `stateforge-agent.service` unit.
-6. Start a dummy Provider as a separate non-root systemd service.
-7. Wait for the Agent to accept that Provider's manifest.
-8. Prove the CLI, imported Python distribution, and RPM versions agree and
+1. Select and check out the requested Protocol and Provider revisions.
+2. Invoke Protocol's `python/build` and Provider's `package/build` actions.
+3. Record their commits and package hashes in one immutable fixture bundle.
+4. Start a clean Fedora systemd container with no source checkout mounted.
+5. Verify and install the Agent RPM.
+6. Install the matching Protocol wheel and third-party runtime dependencies.
+7. Start the packaged `stateforge-agent.service` unit.
+8. Start a dummy Provider as a separate non-root systemd service.
+9. Wait for the Agent to accept that Provider's manifest.
+10. Prove the CLI, imported Python distribution, and RPM versions agree and
    that RPM owns the imported module.
-9. Capture bounded journals, process state, descriptors, package ownership,
+11. Capture bounded journals, process state, descriptors, package ownership,
    and package verification evidence.
-10. Stop services, uninstall the RPM, verify removal, and remove the container.
+12. Stop services, uninstall the RPM, verify removal, and remove the container.
 
 ```mermaid
 flowchart LR
@@ -82,10 +85,16 @@ flowchart LR
 
 No Agent or Provider source directory is mounted into the test system. The
 Agent executable and package must be owned by the RPM. The Provider and
-Protocol are built into wheels before the test because
+Protocol are built into wheels once before the scenario matrix because
 `stateforge-provider` and `stateforge-protocol` are not yet
 published to PyPI. Those wheels are installed into the test system; their
 source checkouts are never used as import roots.
+
+The dependency-build job is the only job with source-repository credentials.
+It invokes the portable build action from each selected checkout, validates
+the action-produced checksum manifests, and uploads one fixture artifact.
+Every scenario downloads and validates that same artifact instead of rebuilding
+packages or receiving a GitHub token.
 
 Because those source repositories are private, the installed-test workflow
 mints a short-lived installation token from a dedicated GitHub App. Configure
@@ -122,7 +131,7 @@ digest of each generated wheel.
 | `agent/install` | Create clean Fedora, install the exact RPM and dependencies, and verify package ownership. |
 | `agent/start` | Start the packaged systemd unit and wait for an explicit readiness event. |
 | `agent/collect-evidence` | Capture bounded evidence, uninstall the RPM, and clean up. |
-| `provider/create-fixture` | Build Provider and Protocol wheels and stage a selected fixture. |
+| `provider/create-fixture` | Invoke the selected Protocol and Provider checkouts' canonical package-build actions and stage their wheels with a selected fixture. |
 | `provider/start` | Run the fixture as a separate non-root systemd service. |
 | `provider/assert-manifest` | Assert the Agent accepted the Provider manifest. |
 
@@ -135,8 +144,9 @@ RPM, Docker, or systemd behavior.
 ## Workflows
 
 - `rpm-build.yml` builds and uploads one immutable RPM artifact.
-- `rpm-installed-test.yml` downloads that artifact and runs the installed
-  Agent/Provider test.
+- `rpm-installed-test.yml` builds one immutable Provider fixture artifact,
+  downloads the RPM and fixture artifacts, and runs the installed
+  Agent/Provider scenario matrix.
 - `rpm-build-and-test.yml` composes the two jobs and exposes the tested
   artifact name, version, and SHA-256 digest.
 - `rpm-ci.yml` is the thin pull-request and integration-branch entry point.

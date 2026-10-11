@@ -99,29 +99,72 @@ def test_installed_test_consumes_rpm_and_packaged_provider_wheels() -> None:
     assert "./.github/actions/provider/start" in scenario
     assert "./.github/actions/provider/assert-manifest" in scenario
     assert "rpm -Uvh --nodeps" in install
-    assert "python3 -m pip wheel --no-deps" in fixture
+    assert (
+        "./.stateforge-ci/sources/protocol/.github/actions/python/build"
+        in fixture
+    )
+    assert (
+        "./.stateforge-ci/sources/provider/.github/actions/package/build"
+        in fixture
+    )
+    assert "pip wheel" not in fixture
     assert "stateforge-provider-python" in fixture
-    assert "stateforge_provider-*.whl" in fixture
+    assert (
+        "PROVIDER_WHEEL: ${{ steps.provider.outputs.wheel-path }}" in fixture
+    )
     assert "stateforge_provider-*.whl" in provider_start
     assert "from stateforge_provider import" in fixture_source
     assert "token: ${{ inputs.repository-token }}" in fixture
 
 
 def test_private_sources_use_a_short_lived_github_app_token() -> None:
-    """Avoid long-lived PATs when building unpublished dependency wheels."""
+    """Keep source credentials in the one dependency-build job."""
     workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario_actions = "\n".join(
+        read(path)
+        for path in (
+            ACTIONS
+            / "rpm"
+            / "test-installed"
+            / "smoke"
+            / "manifest-exchange"
+            / "action.yml",
+            ACTIONS
+            / "rpm"
+            / "test-installed"
+            / "lifecycle"
+            / "multiple-providers"
+            / "action.yml",
+            ACTIONS
+            / "rpm"
+            / "test-installed"
+            / "adversarial"
+            / "invalid-descriptor"
+            / "action.yml",
+            ACTIONS
+            / "rpm"
+            / "test-installed"
+            / "destructive"
+            / "uninstall-reinstall"
+            / "action.yml",
+        )
+    )
 
     assert "actions/create-github-app-token@" in workflow
     assert "source_app_id:" in workflow
     assert "source_private_key:" in workflow
+    assert "permission-contents: read" in workflow
     assert (
         "repository-token: ${{ steps.source-token.outputs.token }}" in workflow
     )
+    assert workflow.count("actions/create-github-app-token@") == 1
+    assert "repository-token:" not in scenario_actions
 
 
 def test_dependency_refs_are_configurable_and_traceable() -> None:
     """Bind convenient requested refs to immutable tested artifacts."""
     release = read(WORKFLOWS / "rpm-release-candidate.yml")
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
     fixture = read(ACTIONS / "provider" / "create-fixture" / "action.yml")
     setup = read(ACTIONS / "rpm" / "test-installed" / "setup" / "action.yml")
 
@@ -143,6 +186,8 @@ def test_dependency_refs_are_configurable_and_traceable() -> None:
     assert "wheel_sha256:" in fixture
     assert "${{ steps.fixture.outputs.provenance-path }}" in setup
     assert "dependency-provenance.json" in setup
+    assert "provider-ref: ${{ inputs.provider-ref }}" in workflow
+    assert "protocol-ref: ${{ inputs.protocol-ref }}" in workflow
 
 
 def test_installed_python_and_rpm_identity_must_agree() -> None:
@@ -190,13 +235,33 @@ def test_external_actions_are_sha_pinned() -> None:
 
 
 def test_shared_pipeline_passes_one_artifact_from_build_to_test() -> None:
-    """The installed test must receive the build job's artifact identity."""
+    """Transfer exact Agent and fixture artifacts to installed scenarios."""
     workflow = read(WORKFLOWS / "rpm-build-and-test.yml")
+    installed = read(WORKFLOWS / "rpm-installed-test.yml")
 
     assert "needs: build" in workflow
     assert (
         "artifact-name: ${{ needs.build.outputs.artifact-name }}" in workflow
     )
+    assert "fixture-artifact-name:" in workflow
+    assert "needs: fixture" in installed
+    assert "name: ${{ inputs.fixture-artifact-name }}" in installed
+
+
+def test_dependency_packages_are_built_once_and_reused() -> None:
+    """Do not rebuild Provider or Protocol inside each scenario."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    setup = read(ACTIONS / "rpm" / "test-installed" / "setup" / "action.yml")
+    fixture = read(ACTIONS / "provider" / "create-fixture" / "action.yml")
+
+    assert "fixture:\n    name: Build Provider fixture bundle" in workflow
+    assert workflow.count("./.github/actions/provider/create-fixture") == 1
+    assert "Upload immutable Provider fixture bundle" in workflow
+    assert "Download exact Provider fixture bundle" in workflow
+    assert "fixture-directory: dist/provider-fixture" in workflow
+    assert "./.github/actions/provider/create-fixture" not in setup
+    assert "sha256sum --check SHA256SUMS" in setup
+    assert "sha256sum --check SHA256SUMS" in fixture
 
 
 def test_action_library_has_expected_domain_boundaries() -> None:
