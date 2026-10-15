@@ -10,9 +10,9 @@ from stateforge_protocol.sfp.bootstrap.v1 import (
     bootstrap_pb2,
     bootstrap_pb2_grpc,
     contract,
+    validation,
 )
 
-from stateforge_agent._identity import parse_canonical_uuid4
 from stateforge_agent._sfp._runtime.descriptor import (
     ProviderEndpointDescriptor,
 )
@@ -62,6 +62,12 @@ async def perform_handshake(
         raise SfpConnectionError(
             "Handshake request exceeds the canonical Bootstrap limit"
         )
+    try:
+        validation.validate_handshake_request(request)
+    except validation.BootstrapValidationError as error:
+        raise SfpConnectionError(
+            f"Handshake request violates the Bootstrap contract: {error}"
+        ) from error
 
     try:
         response = await stub.Handshake(request, timeout=timeout_seconds)
@@ -79,49 +85,32 @@ async def perform_handshake(
         raise SfpConnectionError(
             "Handshake response exceeds the canonical Bootstrap limit"
         )
+    try:
+        validated = validation.validate_handshake_response(response)
+    except validation.BootstrapValidationError as error:
+        raise SfpConnectionError(
+            f"Handshake response violates the Bootstrap contract: {error}"
+        ) from error
 
-    if response.provider_instance_id != str(descriptor.provider_instance_id):
+    if validated.provider_instance_id != descriptor.provider_instance_id:
         raise SfpConnectionError(
             "Handshake returned a different Provider instance identity"
         )
-    if response.endpoint_generation != descriptor.endpoint_generation:
+    if validated.endpoint_generation != descriptor.endpoint_generation:
         raise SfpConnectionError(
             "Handshake returned a different endpoint generation"
         )
-    if not response.HasField("selected_sfp_version"):
-        raise SfpConnectionError("Handshake did not select an SFP version")
-    try:
-        selected_version = SfpVersion(
-            major=response.selected_sfp_version.major,
-            minor=response.selected_sfp_version.minor,
-        )
-    except ValueError as error:
-        raise SfpConnectionError(
-            "Handshake selected an invalid SFP version"
-        ) from error
+    selected_version = SfpVersion(
+        major=validated.selected_sfp_version.major,
+        minor=validated.selected_sfp_version.minor,
+    )
     if selected_version not in supported_sfp_versions:
         raise SfpConnectionError(
             "Handshake selected an SFP version the Agent did not offer"
         )
 
-    try:
-        provider_runtime_id = parse_canonical_uuid4(
-            response.provider_runtime_id
-        )
-    except ValueError as error:
-        raise SfpConnectionError(
-            "Handshake provider_runtime_id must be a canonical UUIDv4"
-        ) from error
-
-    session_id = response.session_id
-    if not session_id or len(session_id) > contract.MAX_SESSION_ID_CODE_POINTS:
-        raise SfpConnectionError(
-            "Handshake session_id must contain 1-"
-            f"{contract.MAX_SESSION_ID_CODE_POINTS} Unicode code points"
-        )
-
     return HandshakeResult(
         selected_sfp_version=selected_version,
-        provider_runtime_id=provider_runtime_id,
-        session_id=session_id,
+        provider_runtime_id=validated.provider_runtime_id,
+        session_id=validated.session_id,
     )

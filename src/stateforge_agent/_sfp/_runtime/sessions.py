@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import UUID
 
 import grpc
+from stateforge_protocol.sfp import primitives
 
 from stateforge_agent._sfp._runtime.channel import create_provider_channel
 from stateforge_agent._sfp._runtime.descriptor import (
@@ -32,7 +33,6 @@ from stateforge_agent._sfp._services.manifest.declaration import (
 )
 from stateforge_agent._sfp.version import SfpVersion
 
-_UUID_VERSION = 4
 _LOGGER = logging.getLogger(__name__)
 _FAILED_CHANNEL_STATES = {
     grpc.ChannelConnectivity.TRANSIENT_FAILURE,
@@ -113,8 +113,12 @@ class ProviderSessionManager:
         manifest_client: ManifestRetriever | None = None,
     ) -> None:
         """Create an empty Provider session registry."""
-        if agent_runtime_id.version != _UUID_VERSION:
+        if not isinstance(agent_runtime_id, UUID):
             raise ValueError("agent_runtime_id must be a UUIDv4")
+        try:
+            primitives.parse_canonical_uuid4(str(agent_runtime_id))
+        except primitives.ProtocolScalarError as error:
+            raise ValueError("agent_runtime_id must be a UUIDv4") from error
         if not agent_software_version:
             raise ValueError("agent_software_version must not be empty")
         if not supported_sfp_versions:

@@ -1285,11 +1285,11 @@ async def test_provider_rejects_request_identity_mismatch(
         ),
         (
             _HandshakeResponseOverrides(omit_selected_sfp_version=True),
-            "did not select an SFP version",
+            "selected_sfp_version is required",
         ),
         (
             _HandshakeResponseOverrides(selected_sfp_version=(0, 0)),
-            "selected an invalid SFP version",
+            "SFP major version must be a positive uint32",
         ),
         (
             _HandshakeResponseOverrides(selected_sfp_version=(2, 0)),
@@ -1301,11 +1301,15 @@ async def test_provider_rejects_request_identity_mismatch(
         ),
         (
             _HandshakeResponseOverrides(session_id=""),
-            "session_id must contain 1-255 Unicode code points",
+            "session_id must contain 1-"
+            f"{bootstrap_contract.MAX_SESSION_ID_CODE_POINTS} Unicode code "
+            "points",
         ),
         (
             _HandshakeResponseOverrides(session_id="x" * 256),
-            "session_id must contain 1-255 Unicode code points",
+            "session_id must contain 1-"
+            f"{bootstrap_contract.MAX_SESSION_ID_CODE_POINTS} Unicode code "
+            "points",
         ),
     ],
 )
