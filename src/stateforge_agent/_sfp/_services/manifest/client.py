@@ -70,8 +70,15 @@ class _DecodedManifestResponse:
     rejection: str | None = None
 
 
-_GET_MANIFEST_METHOD = (
-    "/stateforge.sfp.manifest.v1.ManifestService/GetManifest"
+_MANIFEST_SERVICE_DESCRIPTOR = manifest_pb2.DESCRIPTOR.services_by_name[
+    "ManifestService"
+]
+_GET_MANIFEST_DESCRIPTOR = _MANIFEST_SERVICE_DESCRIPTOR.methods_by_name[
+    "GetManifest"
+]
+_GET_MANIFEST_METHOD_PATH = (
+    f"/{_MANIFEST_SERVICE_DESCRIPTOR.full_name}/"
+    f"{_GET_MANIFEST_DESCRIPTOR.name}"
 )
 _MAX_UINT32 = (1 << 32) - 1
 
@@ -151,7 +158,7 @@ class ManifestClient:
         # Bind the P1 response limit to this procedure rather than raising the
         # ceiling for every service multiplexed over the shared SFP channel.
         call: _ManifestUnaryCall = channel.unary_unary(
-            _GET_MANIFEST_METHOD,
+            _GET_MANIFEST_METHOD_PATH,
             request_serializer=(
                 manifest_pb2.GetManifestRequest.SerializeToString
             ),
