@@ -14,6 +14,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from stateforge_protocol.sfp.manifest.v1 import manifest_pb2, manifest_pb2_grpc
 
 from stateforge_agent._sfp import SfpManifestError, SfpVersion
+from stateforge_agent._sfp._runtime.channel import create_provider_channel
 from stateforge_agent._sfp._runtime.descriptor import (
     ProviderEndpointDescriptor,
 )
@@ -141,7 +142,7 @@ async def _start_peer(
     manifest_pb2_grpc.add_ManifestServiceServicer_to_server(peer, server)
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
-    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    channel = create_provider_channel(f"127.0.0.1:{port}")
     await channel.channel_ready()
     return server, channel
 
@@ -169,7 +170,7 @@ async def _start_raw_peer(
     )
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
-    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    channel = create_provider_channel(f"127.0.0.1:{port}")
     await channel.channel_ready()
     return server, channel
 

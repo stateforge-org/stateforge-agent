@@ -13,6 +13,7 @@ from uuid import UUID
 
 import grpc
 
+from stateforge_agent._sfp._runtime.channel import create_provider_channel
 from stateforge_agent._sfp._runtime.descriptor import (
     ProviderEndpointDescriptor,
 )
@@ -227,7 +228,7 @@ class ProviderSessionManager:
         if attempt is None:
             raise RuntimeError("Connection attempt was not initialized")
 
-        channel = grpc.aio.insecure_channel(f"unix:{descriptor.socket_path}")
+        channel = create_provider_channel(f"unix:{descriptor.socket_path}")
         try:
             candidate = await self._connect_candidate(
                 channel=channel,

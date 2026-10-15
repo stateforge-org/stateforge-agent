@@ -14,6 +14,9 @@ from stateforge_protocol.sfp.bootstrap.v1 import (
     bootstrap_pb2,
     bootstrap_pb2_grpc,
 )
+from stateforge_protocol.sfp.bootstrap.v1 import (
+    contract as bootstrap_contract,
+)
 
 from stateforge_agent._sfp import (
     ProviderConnectionState,
@@ -24,9 +27,11 @@ from stateforge_agent._sfp import (
     SfpManifestError,
     SfpVersion,
 )
+from stateforge_agent._sfp._runtime.channel import create_provider_channel
 from stateforge_agent._sfp._runtime.descriptor import (
     ProviderEndpointDescriptor,
 )
+from stateforge_agent._sfp._services.bootstrap.client import perform_handshake
 from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestCacheKey,
     ManifestDeclaration,
@@ -37,6 +42,8 @@ _DIFFERENT_PROVIDER_INSTANCE_ID = "00000000-0000-4000-8000-000000000000"
 _SFP_VERSION = SfpVersion(major=1, minor=0)
 _REPLACEMENT_ENDPOINT_GENERATION = 2
 _MANIFEST_REVISION = "sha256:" + ("0" * 64)
+_VARINT_DATA_MASK = 0x7F
+_VARINT_CONTINUATION_BIT = 0x80
 
 
 def _manifest_for(
@@ -112,6 +119,69 @@ class _HandshakeResponseOverrides:
     omit_selected_sfp_version: bool = False
     provider_runtime_id: str | None = None
     session_id: str | None = None
+    serialized_size: int | None = None
+
+
+def _encode_varint(value: int) -> bytes:
+    """Encode one nonnegative integer for a test-only unknown field."""
+    encoded = bytearray()
+    while value > _VARINT_DATA_MASK:
+        encoded.append((value & _VARINT_DATA_MASK) | _VARINT_CONTINUATION_BIT)
+        value >>= 7
+    encoded.append(value)
+    return bytes(encoded)
+
+
+def _pad_handshake_response(
+    response: bootstrap_pb2.HandshakeResponse,
+    target_size: int,
+) -> bootstrap_pb2.HandshakeResponse:
+    """Retain a valid response while padding its unknown wire fields."""
+    serialized = response.SerializeToString()
+    unknown_field_tag = _encode_varint((2_047 << 3) | 2)
+    padding_size = target_size - len(serialized) - len(unknown_field_tag) - 1
+    for _ in range(8):
+        wire = (
+            serialized
+            + unknown_field_tag
+            + _encode_varint(padding_size)
+            + bytes(padding_size)
+        )
+        difference = target_size - len(wire)
+        if difference == 0:
+            return bootstrap_pb2.HandshakeResponse.FromString(wire)
+        padding_size += difference
+    raise AssertionError(f"Could not construct a {target_size}-byte response")
+
+
+def _software_version_for_request_size(
+    *,
+    agent_runtime_id: UUID,
+    descriptor: ProviderEndpointDescriptor,
+    target_size: int,
+) -> str:
+    """Return a software version producing an exact-size request."""
+    request = bootstrap_pb2.HandshakeRequest(
+        agent_runtime=bootstrap_pb2.AgentRuntime(
+            runtime_id=str(agent_runtime_id),
+        ),
+        expected_provider_instance_id=str(descriptor.provider_instance_id),
+        expected_endpoint_generation=descriptor.endpoint_generation,
+        supported_sfp_versions=[
+            bootstrap_pb2.ProtocolVersion(
+                major=_SFP_VERSION.major,
+                minor=_SFP_VERSION.minor,
+            )
+        ],
+    )
+    software_version_length = target_size
+    for _ in range(8):
+        request.agent_runtime.software_version = "x" * software_version_length
+        difference = target_size - request.ByteSize()
+        if difference == 0:
+            return request.agent_runtime.software_version
+        software_version_length += difference
+    raise AssertionError(f"Could not construct a {target_size}-byte request")
 
 
 @pytest.fixture
@@ -206,6 +276,11 @@ class _BootstrapServicer(bootstrap_pb2_grpc.BootstrapServiceServicer):
                     major=selected_major,
                     minor=selected_minor,
                 )
+            )
+        if overrides.serialized_size is not None:
+            response = _pad_handshake_response(
+                response,
+                overrides.serialized_size,
             )
         return response
 
@@ -398,6 +473,101 @@ async def test_establishes_and_reuses_negotiated_session(
     assert status.state is ProviderConnectionState.UNAVAILABLE
     assert status.active_endpoint_generation is None
     assert status.candidate_endpoint_generation is None
+
+
+@pytest.mark.parametrize(
+    ("request_size", "accepted"),
+    [
+        (bootstrap_contract.MAX_REQUEST_BYTES, True),
+        (bootstrap_contract.MAX_REQUEST_BYTES + 1, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_enforces_canonical_bootstrap_request_limit(
+    socket_directory: Path,
+    request_size: int,
+    accepted: bool,
+) -> None:
+    server = _BootstrapServer(socket_directory, endpoint_generation=1)
+    agent_runtime_id = uuid4()
+    software_version = _software_version_for_request_size(
+        agent_runtime_id=agent_runtime_id,
+        descriptor=server.descriptor,
+        target_size=request_size,
+    )
+    await server.start()
+    channel = create_provider_channel(f"unix:{server.socket_path}")
+    try:
+        await channel.channel_ready()
+        handshake = perform_handshake(
+            channel,
+            server.descriptor,
+            agent_runtime_id=agent_runtime_id,
+            agent_software_version=software_version,
+            supported_sfp_versions=(_SFP_VERSION,),
+            timeout_seconds=2,
+        )
+        if accepted:
+            result = await handshake
+            assert result.selected_sfp_version == _SFP_VERSION
+            assert server.servicer.handshake_calls == 1
+        else:
+            with pytest.raises(
+                SfpConnectionError,
+                match="request exceeds the canonical Bootstrap limit",
+            ):
+                await handshake
+            assert server.servicer.handshake_calls == 0
+    finally:
+        await channel.close()
+        await server.stop()
+
+
+@pytest.mark.parametrize(
+    ("response_size", "accepted"),
+    [
+        (bootstrap_contract.MAX_RESPONSE_BYTES, True),
+        (bootstrap_contract.MAX_RESPONSE_BYTES + 1, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_enforces_canonical_bootstrap_response_limit(
+    socket_directory: Path,
+    response_size: int,
+    accepted: bool,
+) -> None:
+    server = _BootstrapServer(
+        socket_directory,
+        endpoint_generation=1,
+        response_overrides=_HandshakeResponseOverrides(
+            serialized_size=response_size
+        ),
+    )
+    await server.start()
+    channel = create_provider_channel(f"unix:{server.socket_path}")
+    try:
+        await channel.channel_ready()
+        handshake = perform_handshake(
+            channel,
+            server.descriptor,
+            agent_runtime_id=uuid4(),
+            agent_software_version="0.1.0",
+            supported_sfp_versions=(_SFP_VERSION,),
+            timeout_seconds=2,
+        )
+        if accepted:
+            result = await handshake
+            assert result.selected_sfp_version == _SFP_VERSION
+        else:
+            with pytest.raises(
+                SfpConnectionError,
+                match="response exceeds the canonical Bootstrap limit",
+            ):
+                await handshake
+        assert server.servicer.handshake_calls == 1
+    finally:
+        await channel.close()
+        await server.stop()
 
 
 @pytest.mark.asyncio
