@@ -8,7 +8,7 @@ from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestCacheKey,
     ManifestDeclaration,
 )
-from stateforge_agent._sfp._services.manifest.limits import (
+from stateforge_agent._sfp._services.manifest.policy import (
     DEFAULT_CACHE_ENTRIES,
 )
 

@@ -11,6 +11,7 @@ import grpc
 import pytest
 import rfc8785
 from google.protobuf.json_format import MessageToDict, ParseDict
+from stateforge_protocol.sfp.manifest.v1 import contract as manifest_contract
 from stateforge_protocol.sfp.manifest.v1 import manifest_pb2, manifest_pb2_grpc
 
 from stateforge_agent._sfp import SfpManifestError, SfpVersion
@@ -24,9 +25,8 @@ from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestDeclaration,
     cache_key,
 )
-from stateforge_agent._sfp._services.manifest.limits import (
+from stateforge_agent._sfp._services.manifest.policy import (
     MAX_MANIFEST_SCHEMA_VERSIONS,
-    MAX_RESPONSE_BYTES,
 )
 from stateforge_agent._sfp._services.manifest.schema import validate_schema
 
@@ -279,7 +279,9 @@ def test_accepts_the_supported_schema_offer_boundaries() -> None:
 
 @pytest.mark.asyncio
 async def test_rejects_oversized_wire_response_before_decoding() -> None:
-    server, channel = await _start_raw_peer(b"\x80" * (MAX_RESPONSE_BYTES + 1))
+    server, channel = await _start_raw_peer(
+        b"\x80" * (manifest_contract.MAX_RESPONSE_BYTES + 1)
+    )
 
     try:
         with pytest.raises(SfpManifestError, match="exceeds the P1 limit"):
