@@ -9,6 +9,7 @@ import grpc
 from stateforge_protocol.sfp.bootstrap.v1 import (
     bootstrap_pb2,
     bootstrap_pb2_grpc,
+    contract,
 )
 
 from stateforge_agent._identity import parse_canonical_uuid4
@@ -20,8 +21,6 @@ from stateforge_agent._sfp._runtime.errors import (
     SfpIncompatibleError,
 )
 from stateforge_agent._sfp.version import SfpVersion
-
-_MAX_SESSION_ID_CODE_POINTS = 255
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +58,10 @@ async def perform_handshake(
             for version in supported_sfp_versions
         ],
     )
+    if request.ByteSize() > contract.MAX_REQUEST_BYTES:
+        raise SfpConnectionError(
+            "Handshake request exceeds the canonical Bootstrap limit"
+        )
 
     try:
         response = await stub.Handshake(request, timeout=timeout_seconds)
@@ -71,6 +74,11 @@ async def perform_handshake(
             "Provider handshake failed: "
             f"status={error.code().name} details={error.details()}"
         ) from error
+
+    if response.ByteSize() > contract.MAX_RESPONSE_BYTES:
+        raise SfpConnectionError(
+            "Handshake response exceeds the canonical Bootstrap limit"
+        )
 
     if response.provider_instance_id != str(descriptor.provider_instance_id):
         raise SfpConnectionError(
@@ -106,9 +114,10 @@ async def perform_handshake(
         ) from error
 
     session_id = response.session_id
-    if not session_id or len(session_id) > _MAX_SESSION_ID_CODE_POINTS:
+    if not session_id or len(session_id) > contract.MAX_SESSION_ID_CODE_POINTS:
         raise SfpConnectionError(
-            "Handshake session_id must contain 1-255 Unicode code points"
+            "Handshake session_id must contain 1-"
+            f"{contract.MAX_SESSION_ID_CODE_POINTS} Unicode code points"
         )
 
     return HandshakeResult(

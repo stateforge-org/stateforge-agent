@@ -30,6 +30,14 @@ candidate endpoint becomes the connected session only after the manifest has
 passed its negotiated schema, protocol limits, canonical-revision, embedded
 JSON Schema, and secret-safety checks.
 
+The channel send and receive ceilings are derived from the complete procedure
+inventory published by `stateforge-protocol`. They allow the largest valid SFP
+message in either direction, while every procedure—including Bootstrap and
+Manifest Exchange—continues to enforce its smaller serialized-message limits
+at its own RPC boundary. The standard gRPC Health identifiers and limits are
+likewise owned by `stateforge_protocol.sfp.health_contract`; Agent health
+monitoring will consume that contract rather than define a local copy.
+
 A transport failure is retried with bounded backoff. An incompatible SFP
 version or rejected manifest is instead reported as a declaration problem and
 does not enter the transport reconnect loop. When an existing valid endpoint

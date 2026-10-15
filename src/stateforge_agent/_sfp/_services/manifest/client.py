@@ -9,6 +9,7 @@ from typing import Protocol
 
 import grpc
 from google.protobuf.message import DecodeError
+from stateforge_protocol.sfp.manifest.v1 import contract as manifest_contract
 from stateforge_protocol.sfp.manifest.v1 import manifest_pb2
 
 from stateforge_agent._sfp._runtime.descriptor import (
@@ -24,12 +25,10 @@ from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestDeclaration,
     cache_key,
 )
-from stateforge_agent._sfp._services.manifest.limits import (
+from stateforge_agent._sfp._services.manifest.policy import (
     DEFAULT_READ_ATTEMPTS,
     DEFAULT_RETRY_INITIAL_DELAY_SECONDS,
     MAX_MANIFEST_SCHEMA_VERSIONS,
-    MAX_REQUEST_BYTES,
-    MAX_RESPONSE_BYTES,
     SUPPORTED_MANIFEST_SCHEMA_VERSIONS,
 )
 from stateforge_agent._sfp.version import SfpVersion
@@ -146,7 +145,7 @@ class ManifestClient:
             ),
             expected_session_id=session_id,
         )
-        if request.ByteSize() > MAX_REQUEST_BYTES:
+        if request.ByteSize() > manifest_contract.MAX_REQUEST_BYTES:
             raise SfpManifestError("Manifest request exceeds the P1 limit")
 
         # Bind the P1 response limit to this procedure rather than raising the
@@ -166,7 +165,7 @@ class ManifestClient:
         response = decoded.response
         if response is None:
             raise SfpManifestError("Manifest response protobuf is malformed")
-        if response.ByteSize() > MAX_RESPONSE_BYTES:
+        if response.ByteSize() > manifest_contract.MAX_RESPONSE_BYTES:
             raise SfpManifestError("Manifest response exceeds the P1 limit")
         self._validate_header(
             response,
@@ -263,7 +262,7 @@ class ManifestClient:
 
 def _decode_manifest_response(payload: bytes) -> _DecodedManifestResponse:
     """Bound and decode one serialized P1 response without raising in gRPC."""
-    if len(payload) > MAX_RESPONSE_BYTES:
+    if len(payload) > manifest_contract.MAX_RESPONSE_BYTES:
         return _DecodedManifestResponse(
             rejection="Manifest response exceeds the P1 limit"
         )

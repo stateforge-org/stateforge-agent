@@ -14,12 +14,9 @@ from jsonschema import Draft202012Validator
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
+from stateforge_protocol.sfp.manifest.v1 import contract as manifest_contract
 
 from stateforge_agent._sfp._runtime.errors import SfpManifestError
-from stateforge_agent._sfp._services.manifest.limits import (
-    MAX_CANONICAL_REVISION_PREIMAGE_BYTES,
-    MAX_EMBEDDED_JSON_DEPTH,
-)
 
 JSON_SCHEMA_DRAFT_2020_12_URI = str(Draft202012Validator.META_SCHEMA["$id"])
 _MAX_JSON_NODES = 100_000
@@ -62,7 +59,7 @@ def bounded_json(  # noqa: PLR0912
     value: object,
     path: str,
     *,
-    depth_limit: int = MAX_EMBEDDED_JSON_DEPTH,
+    depth_limit: int = manifest_contract.MAX_EMBEDDED_JSON_DEPTH,
 ) -> None:
     """Reject excessive or non-JSON content before schema processing."""
     pending = [(value, 0)]
@@ -97,7 +94,7 @@ def bounded_json(  # noqa: PLR0912
             size += 1
         else:
             raise SfpManifestError(f"{path}: non-JSON value")
-        if size > MAX_CANONICAL_REVISION_PREIMAGE_BYTES:
+        if size > manifest_contract.MAX_CANONICAL_REVISION_PREIMAGE_BYTES:
             raise SfpManifestError(f"{path}: JSON resource limit exceeded")
 
 
@@ -105,7 +102,10 @@ class _BoundedBuffer(io.BytesIO):
     """Stop RFC 8785 output before it exceeds the Protocol limit."""
 
     def write(self, data: bytes, /) -> int:  # type: ignore[override]
-        if self.tell() + len(data) > MAX_CANONICAL_REVISION_PREIMAGE_BYTES:
+        if (
+            self.tell() + len(data)
+            > manifest_contract.MAX_CANONICAL_REVISION_PREIMAGE_BYTES
+        ):
             raise SfpManifestError(
                 "manifest: canonical preimage limit exceeded"
             )
