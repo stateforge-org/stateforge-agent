@@ -8,6 +8,9 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from stateforge_protocol.sfp.endpoint_discovery.v1 import (
+    contract as discovery_contract,
+)
 
 from stateforge_agent._sfp._runtime.descriptor import (
     PROVIDER_DESCRIPTOR_SUFFIX,
@@ -23,7 +26,6 @@ from stateforge_agent._sfp._runtime.discovery import (
 _DISCOVERY_DIRECTORY_MODE = 0o750
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _ENDPOINT_GENERATION = 4
-_MAXIMUM_ENDPOINT_GENERATION = (2**63) - 1
 
 
 def _descriptor_path(directory: Path) -> Path:
@@ -212,6 +214,20 @@ def test_rejects_noncanonical_descriptor_mode(
         )
 
 
+def test_rejects_descriptor_above_protocol_limit(tmp_path: Path) -> None:
+    descriptor_path = _write_descriptor(tmp_path)
+    descriptor_path.write_bytes(
+        b"x" * (discovery_contract.MAX_DESCRIPTOR_BYTES + 1)
+    )
+    descriptor_path.chmod(discovery_contract.DESCRIPTOR_MODE)
+
+    with pytest.raises(ProviderDescriptorError, match="exceeds 4096 bytes"):
+        load_provider_descriptor(
+            descriptor_path,
+            discovery_directory=tmp_path,
+        )
+
+
 def test_rejects_missing_provider_socket(tmp_path: Path) -> None:
     descriptor_path = _write_descriptor(tmp_path)
     _socket_path(tmp_path).unlink()
@@ -299,7 +315,7 @@ def test_rejects_socket_from_another_group(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "generation",
-    [True, 0, _MAXIMUM_ENDPOINT_GENERATION + 1],
+    [True, 0, discovery_contract.MAX_ENDPOINT_GENERATION + 1],
 )
 def test_rejects_invalid_endpoint_generation(
     tmp_path: Path,
