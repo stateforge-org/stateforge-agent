@@ -28,7 +28,6 @@ from stateforge_agent._sfp._services.manifest.declaration import (
 from stateforge_agent._sfp._services.manifest.policy import (
     DEFAULT_READ_ATTEMPTS,
     DEFAULT_RETRY_INITIAL_DELAY_SECONDS,
-    MAX_MANIFEST_SCHEMA_VERSIONS,
     SUPPORTED_MANIFEST_SCHEMA_VERSIONS,
 )
 from stateforge_agent._sfp.version import SfpVersion
@@ -80,7 +79,6 @@ _GET_MANIFEST_METHOD_PATH = (
     f"/{_MANIFEST_SERVICE_DESCRIPTOR.full_name}/"
     f"{_GET_MANIFEST_DESCRIPTOR.name}"
 )
-_MAX_UINT32 = (1 << 32) - 1
 
 
 class ManifestClient:
@@ -102,10 +100,13 @@ class ManifestClient:
         """Configure one reusable client for the shared Provider channels."""
         if not supported_schema_versions:
             raise ValueError("At least one manifest schema must be supported")
-        if len(supported_schema_versions) > MAX_MANIFEST_SCHEMA_VERSIONS:
+        if (
+            len(supported_schema_versions)
+            > manifest_contract.MAX_SUPPORTED_SCHEMA_VERSIONS
+        ):
             raise ValueError(
                 "Manifest schema versions may contain at most "
-                f"{MAX_MANIFEST_SCHEMA_VERSIONS} values"
+                f"{manifest_contract.MAX_SUPPORTED_SCHEMA_VERSIONS} values"
             )
         if any(
             not isinstance(version, int) or isinstance(version, bool)
@@ -117,7 +118,7 @@ class ManifestClient:
         ):
             raise ValueError("Manifest schema versions must be unique")
         if any(
-            version <= 0 or version > _MAX_UINT32
+            version <= 0 or version > manifest_contract.MAX_SCHEMA_VERSION
             for version in supported_schema_versions
         ):
             raise ValueError(

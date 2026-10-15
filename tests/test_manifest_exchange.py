@@ -29,9 +29,6 @@ from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestDeclaration,
     cache_key,
 )
-from stateforge_agent._sfp._services.manifest.policy import (
-    MAX_MANIFEST_SCHEMA_VERSIONS,
-)
 
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _OTHER_PROVIDER_INSTANCE_ID = UUID("68d818de-3671-471d-a0ba-044cf60e2c8e")
@@ -269,10 +266,10 @@ def test_manifest_cache_is_bounded() -> None:
 @pytest.mark.parametrize(
     "versions",
     [
-        tuple(range(1, MAX_MANIFEST_SCHEMA_VERSIONS + 2)),
+        tuple(range(1, manifest_contract.MAX_SUPPORTED_SCHEMA_VERSIONS + 2)),
         (0,),
         (-1,),
-        (2**32,),
+        (manifest_contract.MAX_SCHEMA_VERSION + 1,),
         (True,),
         ("1",),
     ],
@@ -285,10 +282,12 @@ def test_rejects_invalid_supported_schema_offers(versions: tuple) -> None:
 def test_accepts_the_supported_schema_offer_boundaries() -> None:
     ManifestClient(
         supported_schema_versions=tuple(
-            range(1, MAX_MANIFEST_SCHEMA_VERSIONS + 1)
+            range(1, manifest_contract.MAX_SUPPORTED_SCHEMA_VERSIONS + 1)
         )
     )
-    ManifestClient(supported_schema_versions=((2**32) - 1,))
+    ManifestClient(
+        supported_schema_versions=(manifest_contract.MAX_SCHEMA_VERSION,)
+    )
 
 
 @pytest.mark.asyncio
