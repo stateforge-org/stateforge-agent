@@ -103,7 +103,7 @@ does not check whether the referenced file exists during `check-config`.
 
 | Field | Type | Packaged value | Validation and purpose |
 | --- | --- | --- | --- |
-| `health_interval_seconds` | Integer | `15` | Provider health-monitoring interval. Must be greater than zero. |
+| `health_interval_seconds` | Integer | `15` | Maximum bounded delay before reopening a failed Provider Health Watch. Must be greater than zero. The Agent does not poll healthy Providers. |
 | `reconnect_initial_delay_seconds` | Integer | `1` | Initial bounded-backoff delay after a failed Provider connection. Must be greater than zero. |
 | `reconnect_max_delay_seconds` | Integer | `30` | Maximum reconnect delay. Must be greater than zero and greater than or equal to the initial delay. |
 

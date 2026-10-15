@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import UUID
 
 import grpc
+from grpc_health.v1 import health_pb2
 from stateforge_protocol.sfp import primitives
 
 from stateforge_agent._sfp._runtime.channel import create_provider_channel
@@ -24,6 +25,12 @@ from stateforge_agent._sfp._runtime.errors import (
     SfpManifestError,
 )
 from stateforge_agent._sfp._services.bootstrap.client import perform_handshake
+from stateforge_agent._sfp._services.health.client import (
+    HealthClient,
+    HealthWatcher,
+    SfpHealthError,
+    SfpHealthWatchError,
+)
 from stateforge_agent._sfp._services.manifest.client import (
     ManifestClient,
     ManifestRetriever,
@@ -58,6 +65,18 @@ class ProviderConnectionState(StrEnum):
     REPLACING_RETRIEVING_MANIFEST = "replacing_retrieving_manifest"
 
 
+class ProviderAvailabilityState(StrEnum):
+    """Describe whether one current Provider may accept new operations."""
+
+    UNAVAILABLE = "unavailable"
+    WATCHING = "watching"
+    AVAILABLE = "available"
+    UNKNOWN = "unknown"
+    NOT_SERVING = "not_serving"
+    SERVICE_UNKNOWN = "service_unknown"
+    WATCH_UNSUPPORTED = "watch_unsupported"
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderSession:
     """One negotiated SFP session bound to a Provider endpoint generation."""
@@ -82,6 +101,23 @@ class ProviderConnectionStatus:
     candidate_endpoint_generation: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderAvailabilityStatus:
+    """Expose one immutable operational-eligibility snapshot."""
+
+    provider_instance_id: UUID
+    state: ProviderAvailabilityState
+    endpoint_generation: int | None
+    session_id: str | None
+    manifest_revision: str | None
+    reason: str
+
+    @property
+    def eligible(self) -> bool:
+        """Return whether new operation admission is currently allowed."""
+        return self.state is ProviderAvailabilityState.AVAILABLE
+
+
 @dataclass(slots=True)
 class _ProviderRuntimeState:
     """Keep all mutable connection state for one Provider together."""
@@ -89,8 +125,10 @@ class _ProviderRuntimeState:
     desired_descriptor: ProviderEndpointDescriptor | None = None
     active_session: ProviderSession | None = None
     connection_status: ProviderConnectionStatus | None = None
+    availability_status: ProviderAvailabilityStatus | None = None
     attempt_token: object | None = None
     channel_watcher: asyncio.Task[None] | None = None
+    health_watcher: asyncio.Task[None] | None = None
     retry_task: asyncio.Task[None] | None = None
 
 
@@ -109,8 +147,10 @@ class ProviderSessionManager:
         manifest_read_attempts: int = 3,
         reconnect_initial_delay_seconds: float = 1.0,
         reconnect_max_delay_seconds: float = 30.0,
+        health_retry_max_delay_seconds: float = 15.0,
         descriptor_loader: ProviderDescriptorLoader | None = None,
         manifest_client: ManifestRetriever | None = None,
+        health_client: HealthWatcher | None = None,
     ) -> None:
         """Create an empty Provider session registry."""
         if not isinstance(agent_runtime_id, UUID):
@@ -144,6 +184,8 @@ class ProviderSessionManager:
                 "reconnect_max_delay_seconds must be greater than or equal "
                 "to reconnect_initial_delay_seconds"
             )
+        if health_retry_max_delay_seconds <= 0:
+            raise ValueError("health_retry_max_delay_seconds must be positive")
 
         self._agent_runtime_id = agent_runtime_id
         self._agent_software_version = agent_software_version
@@ -160,7 +202,11 @@ class ProviderSessionManager:
         )
         self._reconnect_initial_delay_seconds = reconnect_initial_delay_seconds
         self._reconnect_max_delay_seconds = reconnect_max_delay_seconds
+        self._health_retry_max_delay_seconds = health_retry_max_delay_seconds
         self._descriptor_loader = descriptor_loader
+        self._health_client = (
+            health_client if health_client is not None else HealthClient()
+        )
         self._providers: dict[UUID, _ProviderRuntimeState] = {}
         self._closed = False
         self._lock = asyncio.Lock()
@@ -177,6 +223,19 @@ class ProviderSessionManager:
         """Return the latest local connection-state snapshot."""
         provider = self._providers.get(provider_instance_id)
         return provider.connection_status if provider is not None else None
+
+    def availability_status(
+        self,
+        provider_instance_id: UUID,
+    ) -> ProviderAvailabilityStatus | None:
+        """Return the latest eligibility snapshot for one Provider."""
+        provider = self._providers.get(provider_instance_id)
+        return provider.availability_status if provider is not None else None
+
+    def is_eligible(self, provider_instance_id: UUID) -> bool:
+        """Return whether one Provider currently accepts new operations."""
+        status = self.availability_status(provider_instance_id)
+        return status is not None and status.eligible
 
     async def establish(
         self,
@@ -280,6 +339,13 @@ class ProviderSessionManager:
                             active_endpoint_generation=None,
                             candidate_endpoint_generation=None,
                         )
+                        self._record_availability(
+                            provider,
+                            _unavailable_status(
+                                descriptor.provider_instance_id,
+                                "Provider connection attempt failed",
+                            ),
+                        )
                     else:
                         provider.connection_status = _connected_status(
                             current_session
@@ -289,11 +355,13 @@ class ProviderSessionManager:
         if not candidate_was_promoted:
             await channel.close()
         replaced_watcher: asyncio.Task[None] | None = None
+        replaced_health_watcher: asyncio.Task[None] | None = None
         if candidate_was_promoted:
             async with self._lock:
                 provider = self._providers.get(result.provider_instance_id)
                 if provider is not None and provider.active_session is result:
                     replaced_watcher = provider.channel_watcher
+                    replaced_health_watcher = provider.health_watcher
                     provider.channel_watcher = asyncio.create_task(
                         self._watch_session(result),
                         name=(
@@ -301,7 +369,15 @@ class ProviderSessionManager:
                             f"{result.provider_instance_id}"
                         ),
                     )
+                    provider.health_watcher = asyncio.create_task(
+                        self._watch_health(result),
+                        name=(
+                            "stateforge-sfp-health-"
+                            f"{result.provider_instance_id}"
+                        ),
+                    )
         await _cancel_task(replaced_watcher)
+        await _cancel_task(replaced_health_watcher)
         if replaced_session is not None:
             await replaced_session._channel.close()
         return result
@@ -387,6 +463,14 @@ class ProviderSessionManager:
             if attempt_is_current and superseded_session is None:
                 provider.active_session = candidate
                 provider.connection_status = _connected_status(candidate)
+                self._record_availability(
+                    provider,
+                    _availability_status(
+                        candidate,
+                        ProviderAvailabilityState.WATCHING,
+                        "awaiting initial Provider Health status",
+                    ),
+                )
 
         if not attempt_is_current:
             if superseded_session is None:
@@ -407,11 +491,13 @@ class ProviderSessionManager:
             )
             session = provider.active_session
             watcher = provider.channel_watcher
+            health_watcher = provider.health_watcher
             retry_task = provider.retry_task
             provider.desired_descriptor = None
             provider.active_session = None
             provider.attempt_token = None
             provider.channel_watcher = None
+            provider.health_watcher = None
             provider.retry_task = None
             provider.connection_status = ProviderConnectionStatus(
                 provider_instance_id=provider_instance_id,
@@ -419,8 +505,25 @@ class ProviderSessionManager:
                 active_endpoint_generation=None,
                 candidate_endpoint_generation=None,
             )
+            self._record_availability(
+                provider,
+                (
+                    _availability_status(
+                        session,
+                        ProviderAvailabilityState.UNAVAILABLE,
+                        "Provider endpoint was removed",
+                    )
+                    if session is not None
+                    else _unavailable_after(
+                        provider.availability_status,
+                        provider_instance_id,
+                        "Provider endpoint was removed",
+                    )
+                ),
+            )
         await _cancel_task(retry_task)
         await _cancel_task(watcher)
+        await _cancel_task(health_watcher)
         if session is not None:
             await session._channel.close()
 
@@ -438,16 +541,23 @@ class ProviderSessionManager:
                 for provider in self._providers.values()
                 if provider.channel_watcher is not None
             )
+            health_watchers = tuple(
+                provider.health_watcher
+                for provider in self._providers.values()
+                if provider.health_watcher is not None
+            )
             retry_tasks = tuple(
                 provider.retry_task
                 for provider in self._providers.values()
                 if provider.retry_task is not None
             )
             for provider_instance_id, provider in self._providers.items():
+                session = provider.active_session
                 provider.desired_descriptor = None
                 provider.active_session = None
                 provider.attempt_token = None
                 provider.channel_watcher = None
+                provider.health_watcher = None
                 provider.retry_task = None
                 provider.connection_status = ProviderConnectionStatus(
                     provider_instance_id=provider_instance_id,
@@ -455,14 +565,34 @@ class ProviderSessionManager:
                     active_endpoint_generation=None,
                     candidate_endpoint_generation=None,
                 )
+                self._record_availability(
+                    provider,
+                    (
+                        _availability_status(
+                            session,
+                            ProviderAvailabilityState.UNAVAILABLE,
+                            "Agent is shutting down",
+                        )
+                        if session is not None
+                        else _unavailable_after(
+                            provider.availability_status,
+                            provider_instance_id,
+                            "Agent is shutting down",
+                        )
+                    ),
+                )
         for retry_task in retry_tasks:
             retry_task.cancel()
         for watcher in watchers:
             watcher.cancel()
+        for health_watcher in health_watchers:
+            health_watcher.cancel()
         if retry_tasks:
             await asyncio.gather(*retry_tasks, return_exceptions=True)
         if watchers:
             await asyncio.gather(*watchers, return_exceptions=True)
+        if health_watchers:
+            await asyncio.gather(*health_watchers, return_exceptions=True)
         for session in sessions:
             await session._channel.close()
 
@@ -649,6 +779,13 @@ class ProviderSessionManager:
                 active_endpoint_generation=None,
                 candidate_endpoint_generation=None,
             )
+            self._record_availability(
+                provider,
+                _unavailable_status(
+                    descriptor.provider_instance_id,
+                    "Provider is SFP-incompatible",
+                ),
+            )
 
     async def _mark_manifest_rejected(
         self,
@@ -670,6 +807,159 @@ class ProviderSessionManager:
                 active_endpoint_generation=None,
                 candidate_endpoint_generation=None,
             )
+            self._record_availability(
+                provider,
+                _unavailable_status(
+                    descriptor.provider_instance_id,
+                    "Provider manifest was rejected",
+                ),
+            )
+
+    async def _watch_health(self, session: ProviderSession) -> None:
+        """Maintain one fenced Provider-wide Health Watch with backoff."""
+        attempt_number = 0
+        try:
+            while await self._mark_health_watching(session):
+                try:
+                    async for status in self._health_client.watch(
+                        session._channel
+                    ):
+                        attempt_number = 0
+                        if not await self._apply_health_status(
+                            session, status
+                        ):
+                            return
+                    reason = "Provider Health Watch ended"
+                except asyncio.CancelledError:
+                    raise
+                except SfpHealthWatchError as error:
+                    code = error.code
+                    reason = f"Provider Health Watch failed: {code.name}"
+                    if code is grpc.StatusCode.UNIMPLEMENTED:
+                        await self._set_availability(
+                            session,
+                            ProviderAvailabilityState.WATCH_UNSUPPORTED,
+                            reason,
+                        )
+                        return
+                except SfpHealthError:
+                    reason = "Provider Health Watch returned invalid data"
+                except Exception:
+                    _LOGGER.exception(
+                        "Provider Health Watch failed locally: "
+                        "provider_instance_id=%s endpoint_generation=%s",
+                        session.provider_instance_id,
+                        session.endpoint_generation,
+                    )
+                    reason = "Provider Health Watch failed locally"
+
+                if not await self._set_availability(
+                    session,
+                    ProviderAvailabilityState.UNAVAILABLE,
+                    reason,
+                ):
+                    return
+                delay = self._health_retry_delay(attempt_number)
+                attempt_number += 1
+                _LOGGER.info(
+                    "Scheduling Provider Health Watch retry: "
+                    "provider_instance_id=%s endpoint_generation=%s "
+                    "attempt=%s delay_seconds=%.3f",
+                    session.provider_instance_id,
+                    session.endpoint_generation,
+                    attempt_number,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        finally:
+            async with self._lock:
+                provider = self._providers.get(session.provider_instance_id)
+                if (
+                    provider is not None
+                    and provider.health_watcher is asyncio.current_task()
+                ):
+                    provider.health_watcher = None
+
+    async def _mark_health_watching(self, session: ProviderSession) -> bool:
+        """Fail closed before opening or reopening a current Health Watch."""
+        return await self._set_availability(
+            session,
+            ProviderAvailabilityState.WATCHING,
+            "awaiting Provider Health status",
+        )
+
+    async def _apply_health_status(
+        self,
+        session: ProviderSession,
+        status: int,
+    ) -> bool:
+        """Apply one ordered status only to its exact current session."""
+        if status == health_pb2.HealthCheckResponse.SERVING:
+            state = ProviderAvailabilityState.AVAILABLE
+            reason = "Provider Health reports SERVING"
+        elif status == health_pb2.HealthCheckResponse.NOT_SERVING:
+            state = ProviderAvailabilityState.NOT_SERVING
+            reason = "Provider Health reports NOT_SERVING"
+        elif status == health_pb2.HealthCheckResponse.SERVICE_UNKNOWN:
+            state = ProviderAvailabilityState.SERVICE_UNKNOWN
+            reason = "Provider-wide Health service is unknown"
+        else:
+            state = ProviderAvailabilityState.UNKNOWN
+            reason = "Provider Health reports UNKNOWN"
+        return await self._set_availability(session, state, reason)
+
+    async def _set_availability(
+        self,
+        session: ProviderSession,
+        state: ProviderAvailabilityState,
+        reason: str,
+    ) -> bool:
+        """Set health-derived eligibility when the session fence is current."""
+        async with self._lock:
+            provider = self._providers.get(session.provider_instance_id)
+            if provider is None or provider.active_session is not session:
+                return False
+            status = _availability_status(
+                session,
+                state,
+                reason,
+            )
+            self._record_availability(provider, status)
+            return True
+
+    def _record_availability(
+        self,
+        provider: _ProviderRuntimeState,
+        status: ProviderAvailabilityStatus,
+    ) -> None:
+        """Store and log every operator-visible eligibility transition."""
+        previous = provider.availability_status
+        provider.availability_status = status
+        if previous != status:
+            _LOGGER.info(
+                "Provider availability changed: "
+                "provider_instance_id=%s endpoint_generation=%s "
+                "state=%s eligible=%s reason=%s",
+                status.provider_instance_id,
+                status.endpoint_generation,
+                status.state,
+                status.eligible,
+                status.reason,
+            )
+
+    def _health_retry_delay(self, attempt_number: int) -> float:
+        """Return a capped jittered delay for a failed Health Watch."""
+        ceiling = min(
+            self._reconnect_initial_delay_seconds,
+            self._health_retry_max_delay_seconds,
+        )
+        for _ in range(attempt_number):
+            if ceiling >= self._health_retry_max_delay_seconds:
+                break
+            ceiling = min(ceiling * 2, self._health_retry_max_delay_seconds)
+        half_ceiling = ceiling / 2
+        jitter_fraction = secrets.randbelow(_JITTER_STEPS + 1) / _JITTER_STEPS
+        return half_ceiling + (half_ceiling * jitter_fraction)
 
     async def _watch_session(self, session: ProviderSession) -> None:
         """Invalidate one exact session when its gRPC channel is lost."""
@@ -698,11 +988,14 @@ class ProviderSessionManager:
         session: ProviderSession,
     ) -> None:
         """Remove a failed active session without disturbing replacements."""
+        health_watcher: asyncio.Task[None] | None = None
         async with self._lock:
             provider = self._providers.get(session.provider_instance_id)
             if provider is None or provider.active_session is not session:
                 return
             provider.active_session = None
+            health_watcher = provider.health_watcher
+            provider.health_watcher = None
             if provider.channel_watcher is asyncio.current_task():
                 provider.channel_watcher = None
 
@@ -738,6 +1031,15 @@ class ProviderSessionManager:
                 active_endpoint_generation=None,
                 candidate_endpoint_generation=candidate_generation,
             )
+            self._record_availability(
+                provider,
+                _availability_status(
+                    session,
+                    ProviderAvailabilityState.UNAVAILABLE,
+                    "Provider channel was lost",
+                ),
+            )
+        await _cancel_task(health_watcher)
         await session._channel.close()
         await self._schedule_retry(session.provider_instance_id)
 
@@ -776,6 +1078,14 @@ class ProviderSessionManager:
                 ),
                 candidate_endpoint_generation=descriptor.endpoint_generation,
             )
+            if current_session is None:
+                self._record_availability(
+                    provider,
+                    _unavailable_status(
+                        descriptor.provider_instance_id,
+                        "Provider session is not established",
+                    ),
+                )
             return None, attempt
 
     async def _mark_handshaking(
@@ -853,6 +1163,55 @@ def _connected_status(session: ProviderSession) -> ProviderConnectionStatus:
         state=ProviderConnectionState.CONNECTED,
         active_endpoint_generation=session.endpoint_generation,
         candidate_endpoint_generation=None,
+    )
+
+
+def _availability_status(
+    session: ProviderSession,
+    state: ProviderAvailabilityState,
+    reason: str,
+) -> ProviderAvailabilityStatus:
+    """Build an eligibility snapshot bound to one exact current session."""
+    return ProviderAvailabilityStatus(
+        provider_instance_id=session.provider_instance_id,
+        state=state,
+        endpoint_generation=session.endpoint_generation,
+        session_id=session.session_id,
+        manifest_revision=session.manifest.key.revision,
+        reason=reason,
+    )
+
+
+def _unavailable_status(
+    provider_instance_id: UUID,
+    reason: str,
+) -> ProviderAvailabilityStatus:
+    """Build an eligibility snapshot without an accepted current session."""
+    return ProviderAvailabilityStatus(
+        provider_instance_id=provider_instance_id,
+        state=ProviderAvailabilityState.UNAVAILABLE,
+        endpoint_generation=None,
+        session_id=None,
+        manifest_revision=None,
+        reason=reason,
+    )
+
+
+def _unavailable_after(
+    previous: ProviderAvailabilityStatus | None,
+    provider_instance_id: UUID,
+    reason: str,
+) -> ProviderAvailabilityStatus:
+    """Fail closed while retaining the last accepted session identity."""
+    if previous is None or previous.endpoint_generation is None:
+        return _unavailable_status(provider_instance_id, reason)
+    return ProviderAvailabilityStatus(
+        provider_instance_id=provider_instance_id,
+        state=ProviderAvailabilityState.UNAVAILABLE,
+        endpoint_generation=previous.endpoint_generation,
+        session_id=previous.session_id,
+        manifest_revision=previous.manifest_revision,
+        reason=reason,
     )
 
 

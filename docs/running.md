@@ -35,8 +35,8 @@ inventory published by `stateforge-protocol`. They allow the largest valid SFP
 message in either direction, while every procedure—including Bootstrap and
 Manifest Exchange—continues to enforce its smaller serialized-message limits
 at its own RPC boundary. The standard gRPC Health identifiers and limits are
-likewise owned by `stateforge_protocol.sfp.health_contract`; Agent health
-monitoring will consume that contract rather than define a local copy.
+likewise owned by `stateforge_protocol.sfp.health_contract`; the Agent
+consumes that contract rather than defining a local copy.
 
 A transport failure is retried with bounded backoff. An incompatible SFP
 version or rejected manifest is instead reported as a declaration problem and
@@ -49,8 +49,20 @@ from a bounded cache keyed by Provider installation, negotiated SFP version,
 manifest schema version, and manifest revision.
 
 `connected` means that the local SFP transport, handshake, and declaration are
-accepted. It does not claim that the Provider or its third-party component is
-healthy or currently able to perform an operation.
+accepted. It remains distinct from operational eligibility. The Agent keeps a
+long-lived `grpc.health.v1.Health.Watch(service="")` on the same channel and
+allows new work only after the current session reports `SERVING`. `UNKNOWN`,
+`NOT_SERVING`, `SERVICE_UNKNOWN`, Watch failure, Watch completion, and an
+unimplemented Watch all fail closed. Retriable failures reopen Watch with
+bounded backoff; `UNIMPLEMENTED` remains terminal for that endpoint
+generation.
+
+Every Health update is fenced by Provider installation identity, endpoint
+generation, negotiated session, and accepted manifest revision. A stale Watch
+cannot reactivate a replaced or rejected session. Health loss changes only
+new-work eligibility; it neither cancels nor invents outcomes for work already
+admitted. Provider availability transitions and sanitized reasons are written
+to the local Agent journal for diagnostics and later internal consumers.
 
 The packaged service owns the Agent filesystem layout. Persistent state is
 stored below `/var/lib/stateforge-agent`, and volatile runtime files are stored

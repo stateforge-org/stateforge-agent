@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import grpc
 import pytest
+from grpc_health.v1 import health_pb2, health_pb2_grpc
 from stateforge_protocol.sfp.bootstrap.v1 import (
     bootstrap_pb2,
     bootstrap_pb2_grpc,
@@ -19,6 +20,7 @@ from stateforge_protocol.sfp.bootstrap.v1 import (
 )
 
 from stateforge_agent._sfp import (
+    ProviderAvailabilityState,
     ProviderConnectionState,
     ProviderSession,
     ProviderSessionManager,
@@ -44,6 +46,7 @@ _REPLACEMENT_ENDPOINT_GENERATION = 2
 _MANIFEST_REVISION = "sha256:" + ("0" * 64)
 _VARINT_DATA_MASK = 0x7F
 _VARINT_CONTINUATION_BIT = 0x80
+_END_HEALTH_WATCH = object()
 
 
 def _manifest_for(
@@ -107,6 +110,55 @@ class _RejectingManifestClient:
     ) -> ManifestDeclaration:
         del channel, descriptor, sfp_version, session_id
         raise SfpManifestError("invalid declaration")
+
+
+class _HealthServicer(health_pb2_grpc.HealthServicer):
+    """Expose controllable Provider-wide Health behavior for sessions."""
+
+    def __init__(self, initial_status: int | None) -> None:
+        self.status = initial_status
+        self.watch_calls = 0
+        self.watch_started = asyncio.Event()
+        self._observers: set[asyncio.Queue[int | object]] = set()
+
+    async def Check(self, request, context):  # noqa: N802
+        del request
+        if self.status is None:
+            await context.abort(
+                grpc.StatusCode.NOT_FOUND,
+                "Provider-wide Health status is not registered",
+            )
+        return health_pb2.HealthCheckResponse(status=self.status)
+
+    async def Watch(self, request, context):  # noqa: N802
+        assert request.service == ""
+        queue: asyncio.Queue[int | object] = asyncio.Queue()
+        self._observers.add(queue)
+        self.watch_calls += 1
+        self.watch_started.set()
+        try:
+            if self.status is not None:
+                yield health_pb2.HealthCheckResponse(status=self.status)
+            while True:
+                status = await queue.get()
+                if status is _END_HEALTH_WATCH:
+                    return
+                assert isinstance(status, int)
+                yield health_pb2.HealthCheckResponse(status=status)
+        finally:
+            self._observers.discard(queue)
+
+    def publish(self, status: int) -> None:
+        """Publish one ordered status to every active Watch."""
+        self.status = status
+        for observer in tuple(self._observers):
+            observer.put_nowait(status)
+
+    def finish_watch(self) -> None:
+        """End every active Watch without closing the shared channel."""
+        self.status = None
+        for observer in tuple(self._observers):
+            observer.put_nowait(_END_HEALTH_WATCH)
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +349,8 @@ class _BootstrapServer:
         allow_handshake: asyncio.Event | None = None,
         response_overrides: _HandshakeResponseOverrides | None = None,
         handshake_error_code: grpc.StatusCode | None = None,
+        health_status: int | None = (health_pb2.HealthCheckResponse.SERVING),
+        health_implemented: bool = True,
     ) -> None:
         self.provider_instance_id = provider_instance_id
         self.endpoint_generation = endpoint_generation
@@ -317,6 +371,12 @@ class _BootstrapServer:
             self.servicer,
             self.server,
         )
+        self.health_servicer = _HealthServicer(health_status)
+        if health_implemented:
+            health_pb2_grpc.add_HealthServicer_to_server(
+                self.health_servicer,
+                self.server,
+            )
 
     @property
     def descriptor(self) -> ProviderEndpointDescriptor:
@@ -395,6 +455,20 @@ async def _wait_for_state(
             await asyncio.sleep(0)
 
 
+async def _wait_for_availability(
+    manager: ProviderSessionManager,
+    expected: ProviderAvailabilityState,
+    provider_instance_id: UUID = _PROVIDER_INSTANCE_ID,
+) -> None:
+    """Wait briefly for one asynchronous availability transition."""
+    async with asyncio.timeout(3):
+        while True:
+            status = manager.availability_status(provider_instance_id)
+            if status is not None and status.state is expected:
+                return
+            await asyncio.sleep(0)
+
+
 def test_rejects_invalid_session_manager_configuration() -> None:
     with pytest.raises(ValueError, match="must not be empty"):
         ProviderSessionManager(
@@ -448,7 +522,9 @@ def test_rejects_invalid_sfp_versions() -> None:
 @pytest.mark.asyncio
 async def test_establishes_and_reuses_negotiated_session(
     socket_directory: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level("INFO")
     server = _BootstrapServer(socket_directory, endpoint_generation=1)
     manager = _manager()
     await server.start()
@@ -473,6 +549,282 @@ async def test_establishes_and_reuses_negotiated_session(
     assert status.state is ProviderConnectionState.UNAVAILABLE
     assert status.active_endpoint_generation is None
     assert status.candidate_endpoint_generation is None
+    availability = manager.availability_status(_PROVIDER_INSTANCE_ID)
+    assert availability is not None
+    assert availability.state is ProviderAvailabilityState.UNAVAILABLE
+    assert availability.endpoint_generation == 1
+    assert availability.session_id == session.session_id
+    assert "state=unavailable" in caplog.text
+    assert "reason=Provider endpoint was removed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_health_watch_gates_new_operation_eligibility(
+    socket_directory: Path,
+) -> None:
+    server = _BootstrapServer(
+        socket_directory,
+        endpoint_generation=1,
+        health_status=None,
+    )
+    manager = _manager()
+    await server.start()
+    try:
+        session = await manager.establish(server.descriptor)
+        await asyncio.wait_for(
+            server.health_servicer.watch_started.wait(),
+            timeout=1,
+        )
+
+        status = manager.availability_status(_PROVIDER_INSTANCE_ID)
+        assert status is not None
+        assert status.state is ProviderAvailabilityState.WATCHING
+        assert not manager.is_eligible(_PROVIDER_INSTANCE_ID)
+        assert status.endpoint_generation == session.endpoint_generation
+        assert status.session_id == session.session_id
+        assert status.manifest_revision == _MANIFEST_REVISION
+
+        server.health_servicer.publish(health_pb2.HealthCheckResponse.SERVING)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+        assert manager.is_eligible(_PROVIDER_INSTANCE_ID)
+
+        server.health_servicer.publish(health_pb2.HealthCheckResponse.UNKNOWN)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.UNKNOWN,
+        )
+        assert not manager.is_eligible(_PROVIDER_INSTANCE_ID)
+
+        server.health_servicer.publish(
+            health_pb2.HealthCheckResponse.NOT_SERVING
+        )
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.NOT_SERVING,
+        )
+        assert not manager.is_eligible(_PROVIDER_INSTANCE_ID)
+        assert manager.get(_PROVIDER_INSTANCE_ID) is session
+
+        server.health_servicer.publish(
+            health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+        )
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.SERVICE_UNKNOWN,
+        )
+
+        server.health_servicer.publish(health_pb2.HealthCheckResponse.SERVING)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+    finally:
+        await manager.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_ended_health_watch_fails_closed_and_retries(
+    socket_directory: Path,
+) -> None:
+    server = _BootstrapServer(socket_directory, endpoint_generation=1)
+    manager = _manager(
+        reconnect_initial_delay_seconds=0.1,
+        reconnect_max_delay_seconds=0.1,
+    )
+    await server.start()
+    try:
+        expected_watch_calls_after_retry = 2
+        await manager.establish(server.descriptor)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+
+        server.health_servicer.watch_started.clear()
+        server.health_servicer.finish_watch()
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.UNAVAILABLE,
+        )
+        assert not manager.is_eligible(_PROVIDER_INSTANCE_ID)
+
+        await asyncio.wait_for(
+            server.health_servicer.watch_started.wait(),
+            timeout=1,
+        )
+        assert (
+            server.health_servicer.watch_calls
+            == expected_watch_calls_after_retry
+        )
+        server.health_servicer.publish(health_pb2.HealthCheckResponse.SERVING)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+    finally:
+        await manager.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_health_watch_unimplemented_is_terminal_for_generation(
+    socket_directory: Path,
+) -> None:
+    server = _BootstrapServer(
+        socket_directory,
+        endpoint_generation=1,
+        health_implemented=False,
+    )
+    manager = _manager(
+        reconnect_initial_delay_seconds=0.01,
+        reconnect_max_delay_seconds=0.02,
+    )
+    await server.start()
+    try:
+        await manager.establish(server.descriptor)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.WATCH_UNSUPPORTED,
+        )
+        await asyncio.sleep(0.05)
+
+        status = manager.availability_status(_PROVIDER_INSTANCE_ID)
+        assert status is not None
+        assert status.state is ProviderAvailabilityState.WATCH_UNSUPPORTED
+        assert not status.eligible
+    finally:
+        await manager.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_rejected_manifest_never_opens_health_watch(
+    socket_directory: Path,
+) -> None:
+    server = _BootstrapServer(socket_directory, endpoint_generation=1)
+    manager = _manager(manifest_client=_RejectingManifestClient())
+    await server.start()
+    try:
+        with pytest.raises(SfpManifestError, match="invalid declaration"):
+            await manager.establish(server.descriptor)
+
+        assert server.health_servicer.watch_calls == 0
+        status = manager.availability_status(_PROVIDER_INSTANCE_ID)
+        assert status is not None
+        assert status.state is ProviderAvailabilityState.UNAVAILABLE
+        assert not status.eligible
+    finally:
+        await manager.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_replacement_fences_stale_health_updates(
+    socket_directory: Path,
+) -> None:
+    first_server = _BootstrapServer(
+        socket_directory,
+        endpoint_generation=1,
+    )
+    second_server = _BootstrapServer(
+        socket_directory,
+        endpoint_generation=_REPLACEMENT_ENDPOINT_GENERATION,
+        health_status=None,
+    )
+    manager = _manager()
+    await first_server.start()
+    await second_server.start()
+    try:
+        first_session = await manager.establish(first_server.descriptor)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+
+        second_session = await manager.establish(second_server.descriptor)
+        await asyncio.wait_for(
+            second_server.health_servicer.watch_started.wait(),
+            timeout=1,
+        )
+        status = manager.availability_status(_PROVIDER_INSTANCE_ID)
+        assert status is not None
+        assert status.state is ProviderAvailabilityState.WATCHING
+        assert status.endpoint_generation == _REPLACEMENT_ENDPOINT_GENERATION
+
+        applied = await manager._apply_health_status(
+            first_session,
+            health_pb2.HealthCheckResponse.SERVING,
+        )
+        assert not applied
+        assert not manager.is_eligible(_PROVIDER_INSTANCE_ID)
+
+        second_server.health_servicer.publish(
+            health_pb2.HealthCheckResponse.SERVING
+        )
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+        assert manager.get(_PROVIDER_INSTANCE_ID) is second_session
+    finally:
+        await manager.close()
+        await first_server.stop()
+        await second_server.stop()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_health_streams_are_provider_scoped(
+    socket_directory: Path,
+) -> None:
+    second_provider_id = uuid4()
+    first_server = _BootstrapServer(
+        socket_directory,
+        endpoint_generation=1,
+        health_status=health_pb2.HealthCheckResponse.SERVING,
+    )
+    second_server = _BootstrapServer(
+        socket_directory,
+        provider_instance_id=second_provider_id,
+        endpoint_generation=1,
+        health_status=health_pb2.HealthCheckResponse.NOT_SERVING,
+    )
+    manager = _manager()
+    await first_server.start()
+    await second_server.start()
+    try:
+        await asyncio.gather(
+            manager.establish(first_server.descriptor),
+            manager.establish(second_server.descriptor),
+        )
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.NOT_SERVING,
+            second_provider_id,
+        )
+
+        assert manager.is_eligible(_PROVIDER_INSTANCE_ID)
+        assert not manager.is_eligible(second_provider_id)
+        second_server.health_servicer.publish(
+            health_pb2.HealthCheckResponse.SERVING
+        )
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+            second_provider_id,
+        )
+        assert manager.is_eligible(second_provider_id)
+    finally:
+        await manager.close()
+        await first_server.stop()
+        await second_server.stop()
 
 
 @pytest.mark.parametrize(

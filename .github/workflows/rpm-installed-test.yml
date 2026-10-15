@@ -92,6 +92,7 @@ jobs:
       matrix:
         scenario:
           - manifest-exchange
+          - provider-availability
           - multiple-providers
           - invalid-descriptor
           - uninstall-reinstall
@@ -123,6 +124,13 @@ jobs:
       - name: Run multiple-Providers scenario
         if: ${{ matrix.scenario == 'multiple-providers' }}
         uses: ./.github/actions/rpm/test-installed/lifecycle/multiple-providers
+        with:
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          fixture-directory: dist/provider-fixture
+
+      - name: Run Provider-availability scenario
+        if: ${{ matrix.scenario == 'provider-availability' }}
+        uses: ./.github/actions/rpm/test-installed/health/provider-availability
         with:
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
           fixture-directory: dist/provider-fixture

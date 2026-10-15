@@ -7,6 +7,7 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 ACTIONS = ROOT / ".github" / "actions"
 SHA_LENGTH = 40
 DEPENDENCY_COUNT = 2
+HEALTH_SCENARIO_PROVIDER_COUNT = 3
 
 
 def read(path: Path) -> str:
@@ -134,6 +135,12 @@ def test_private_sources_use_a_short_lived_github_app_token() -> None:
             / "test-installed"
             / "lifecycle"
             / "multiple-providers"
+            / "action.yml",
+            ACTIONS
+            / "rpm"
+            / "test-installed"
+            / "health"
+            / "provider-availability"
             / "action.yml",
             ACTIONS
             / "rpm"
@@ -267,16 +274,20 @@ def test_dependency_packages_are_built_once_and_reused() -> None:
 def test_action_library_has_expected_domain_boundaries() -> None:
     """Keep reusable behavior organized by domain rather than filename tags."""
     expected = {
+        "agent/assert-availability",
         "agent/collect-evidence",
         "agent/install",
         "agent/start",
         "provider/assert-manifest",
         "provider/create-fixture",
+        "provider/set-health",
         "provider/start",
+        "provider/stop",
         "rpm/build",
         "rpm/test-installed/adversarial/invalid-descriptor",
         "rpm/test-installed/cleanup",
         "rpm/test-installed/destructive/uninstall-reinstall",
+        "rpm/test-installed/health/provider-availability",
         "rpm/test-installed/lifecycle/multiple-providers",
         "rpm/test-installed/setup",
         "rpm/test-installed/smoke/manifest-exchange",
@@ -319,9 +330,46 @@ def test_each_installed_scenario_is_an_independent_action() -> None:
     tiers = {
         scenario.relative_to(scenario_root).parts[0] for scenario in scenarios
     }
-    assert tiers == {"smoke", "lifecycle", "adversarial", "destructive"}
+    assert tiers == {
+        "smoke",
+        "lifecycle",
+        "health",
+        "adversarial",
+        "destructive",
+    }
     for scenario in scenarios:
         content = read(scenario)
         assert "./.github/actions/rpm/test-installed/setup" in content
         assert "./.github/actions/rpm/test-installed/cleanup" in content
         assert "if: ${{ always() }}" in content
+
+
+def test_installed_health_scenario_uses_real_artifacts_and_processes() -> None:
+    """Keep A2 evidence on the RPM, Provider wheel, and shared SFP channel."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario = read(
+        ACTIONS
+        / "rpm"
+        / "test-installed"
+        / "health"
+        / "provider-availability"
+        / "action.yml"
+    )
+    fixture = read(
+        ACTIONS / "provider" / "create-fixture" / "fixtures" / "manifest.py"
+    )
+    assertion = read(ACTIONS / "agent" / "assert-availability" / "action.yml")
+
+    assert "provider-availability" in workflow
+    assert "./.github/actions/rpm/test-installed/setup" in scenario
+    assert (
+        scenario.count("./.github/actions/provider/start")
+        == HEALTH_SCENARIO_PROVIDER_COUNT
+    )
+    assert "provider-state-name: provider-a" in scenario
+    assert "./.github/actions/provider/set-health" in scenario
+    assert "./.github/actions/agent/assert-availability" in scenario
+    assert "HealthStatus" in fixture
+    assert "refresh_health" in fixture
+    assert "Provider availability changed:" in assertion
+    assert "endpoint_generation=${ENDPOINT_GENERATION}" in assertion

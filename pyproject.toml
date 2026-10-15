@@ -39,6 +39,7 @@ classifiers = [
 
 dependencies = [
     "grpcio>=1.83",
+    "grpcio-health-checking>=1.83",
     "stateforge-protocol>=0.1.0,<0.2.0",
     "watchfiles>=1.2,<2",
 ]
@@ -57,6 +58,7 @@ dev = [
     "pytest-cov>=6.2",
     "ruff>=0.12",
     "types-grpcio",
+    "types-grpcio-health-checking",
     "types-protobuf",
 ]
 docs = [

@@ -87,6 +87,9 @@ async def _run_agent(
         reconnect_max_delay_seconds=(
             configuration.providers.reconnect_max_delay_seconds
         ),
+        health_retry_max_delay_seconds=(
+            configuration.providers.health_interval_seconds
+        ),
         descriptor_loader=reload_provider_descriptor,
     )
 
