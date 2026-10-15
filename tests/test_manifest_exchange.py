@@ -1,6 +1,5 @@
 """Manifest validation, caching, transport, and retry evidence for A1."""
 
-import hashlib
 import tempfile
 from collections import deque
 from copy import deepcopy
@@ -9,10 +8,12 @@ from uuid import UUID
 
 import grpc
 import pytest
-import rfc8785
 from google.protobuf.json_format import MessageToDict, ParseDict
 from stateforge_protocol.sfp.manifest.v1 import contract as manifest_contract
 from stateforge_protocol.sfp.manifest.v1 import manifest_pb2, manifest_pb2_grpc
+from stateforge_protocol.sfp.manifest.v1.validation import (
+    compute_manifest_revision,
+)
 
 from stateforge_agent._sfp import SfpManifestError, SfpVersion
 from stateforge_agent._sfp._runtime.channel import create_provider_channel
@@ -31,7 +32,6 @@ from stateforge_agent._sfp._services.manifest.declaration import (
 from stateforge_agent._sfp._services.manifest.policy import (
     MAX_MANIFEST_SCHEMA_VERSIONS,
 )
-from stateforge_agent._sfp._services.manifest.schema import validate_schema
 
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _OTHER_PROVIDER_INSTANCE_ID = UUID("68d818de-3671-471d-a0ba-044cf60e2c8e")
@@ -97,12 +97,11 @@ def _response(
         message,
         always_print_fields_with_no_presence=True,
     )
-    preimage = {
-        "manifest": projected,
-        "manifestSchemaVersion": 1,
-        "providerInstanceId": str(provider_instance_id),
-    }
-    revision = "sha256:" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()
+    revision = compute_manifest_revision(
+        projected,
+        1,
+        str(provider_instance_id),
+    )
     return manifest_pb2.GetManifestResponse(
         provider_instance_id=str(provider_instance_id),
         endpoint_generation=endpoint_generation,
@@ -237,8 +236,13 @@ def test_rejects_revision_mismatch() -> None:
 def test_rejects_unsafe_embedded_schemas_without_echoing_values(
     schema: dict,
 ) -> None:
+    manifest = deepcopy(_MANIFEST)
+    manifest["configurationSchema"] = schema
     with pytest.raises(SfpManifestError) as error:
-        validate_schema(schema, "manifest.configurationSchema")
+        ManifestDeclaration.validate(
+            _response(manifest=manifest),
+            sfp_version=_SFP_VERSION,
+        )
 
     assert "must-not-leak" not in str(error.value)
     assert "example.invalid" not in str(error.value)
