@@ -14,6 +14,9 @@ from stateforge_protocol.sfp.bootstrap.v1 import (
     bootstrap_pb2,
     bootstrap_pb2_grpc,
 )
+from stateforge_protocol.sfp.endpoint_discovery.v1 import (
+    contract as discovery_contract,
+)
 
 from stateforge_agent._runtime.daemon import _process_events
 from stateforge_agent._sfp import (
@@ -39,8 +42,6 @@ _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _SFP_VERSION = SfpVersion(major=1, minor=0)
 _INCOMPATIBLE_SFP_VERSION = SfpVersion(major=2, minor=0)
 _REPLACEMENT_ENDPOINT_GENERATION = 2
-_DESCRIPTOR_MODE = 0o640
-_SOCKET_MODE = 0o660
 _MANIFEST_REVISION = "sha256:" + ("0" * 64)
 
 
@@ -142,7 +143,7 @@ class _LifecycleProvider:
         self.socket_path.unlink(missing_ok=True)
         self.server.add_insecure_port(f"unix:{self.socket_path}")
         await self.server.start()
-        self.socket_path.chmod(_SOCKET_MODE)
+        self.socket_path.chmod(discovery_contract.SOCKET_MODE)
 
     def publish(self) -> None:
         """Atomically advertise this ready endpoint generation."""
@@ -160,7 +161,7 @@ class _LifecycleProvider:
             json.dumps(document),
             encoding="utf-8",
         )
-        temporary_path.chmod(_DESCRIPTOR_MODE)
+        temporary_path.chmod(discovery_contract.DESCRIPTOR_MODE)
         temporary_path.replace(self.descriptor_path)
 
     async def stop(self) -> None:
