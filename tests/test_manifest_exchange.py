@@ -1,6 +1,5 @@
 """Manifest validation, caching, transport, and retry evidence for A1."""
 
-import hashlib
 import tempfile
 from collections import deque
 from copy import deepcopy
@@ -9,10 +8,12 @@ from uuid import UUID
 
 import grpc
 import pytest
-import rfc8785
 from google.protobuf.json_format import MessageToDict, ParseDict
 from stateforge_protocol.sfp.manifest.v1 import contract as manifest_contract
 from stateforge_protocol.sfp.manifest.v1 import manifest_pb2, manifest_pb2_grpc
+from stateforge_protocol.sfp.manifest.v1.validation import (
+    compute_manifest_revision,
+)
 
 from stateforge_agent._sfp import SfpManifestError, SfpVersion
 from stateforge_agent._sfp._runtime.channel import create_provider_channel
@@ -20,15 +21,14 @@ from stateforge_agent._sfp._runtime.descriptor import (
     ProviderEndpointDescriptor,
 )
 from stateforge_agent._sfp._services.manifest.cache import ManifestCache
-from stateforge_agent._sfp._services.manifest.client import ManifestClient
+from stateforge_agent._sfp._services.manifest.client import (
+    _GET_MANIFEST_METHOD_PATH,
+    ManifestClient,
+)
 from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestDeclaration,
     cache_key,
 )
-from stateforge_agent._sfp._services.manifest.policy import (
-    MAX_MANIFEST_SCHEMA_VERSIONS,
-)
-from stateforge_agent._sfp._services.manifest.schema import validate_schema
 
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _OTHER_PROVIDER_INSTANCE_ID = UUID("68d818de-3671-471d-a0ba-044cf60e2c8e")
@@ -94,12 +94,11 @@ def _response(
         message,
         always_print_fields_with_no_presence=True,
     )
-    preimage = {
-        "manifest": projected,
-        "manifestSchemaVersion": 1,
-        "providerInstanceId": str(provider_instance_id),
-    }
-    revision = "sha256:" + hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()
+    revision = compute_manifest_revision(
+        projected,
+        1,
+        str(provider_instance_id),
+    )
     return manifest_pb2.GetManifestResponse(
         provider_instance_id=str(provider_instance_id),
         endpoint_generation=endpoint_generation,
@@ -175,6 +174,13 @@ async def _start_raw_peer(
     return server, channel
 
 
+def test_manifest_method_path_comes_from_protocol_descriptor() -> None:
+    service = manifest_pb2.DESCRIPTOR.services_by_name["ManifestService"]
+    method = service.methods_by_name["GetManifest"]
+
+    assert f"/{service.full_name}/{method.name}" == _GET_MANIFEST_METHOD_PATH
+
+
 def test_validates_the_protocol_conformance_revision() -> None:
     response = _response()
 
@@ -227,8 +233,13 @@ def test_rejects_revision_mismatch() -> None:
 def test_rejects_unsafe_embedded_schemas_without_echoing_values(
     schema: dict,
 ) -> None:
+    manifest = deepcopy(_MANIFEST)
+    manifest["configurationSchema"] = schema
     with pytest.raises(SfpManifestError) as error:
-        validate_schema(schema, "manifest.configurationSchema")
+        ManifestDeclaration.validate(
+            _response(manifest=manifest),
+            sfp_version=_SFP_VERSION,
+        )
 
     assert "must-not-leak" not in str(error.value)
     assert "example.invalid" not in str(error.value)
@@ -255,10 +266,10 @@ def test_manifest_cache_is_bounded() -> None:
 @pytest.mark.parametrize(
     "versions",
     [
-        tuple(range(1, MAX_MANIFEST_SCHEMA_VERSIONS + 2)),
+        tuple(range(1, manifest_contract.MAX_SUPPORTED_SCHEMA_VERSIONS + 2)),
         (0,),
         (-1,),
-        (2**32,),
+        (manifest_contract.MAX_SCHEMA_VERSION + 1,),
         (True,),
         ("1",),
     ],
@@ -271,10 +282,12 @@ def test_rejects_invalid_supported_schema_offers(versions: tuple) -> None:
 def test_accepts_the_supported_schema_offer_boundaries() -> None:
     ManifestClient(
         supported_schema_versions=tuple(
-            range(1, MAX_MANIFEST_SCHEMA_VERSIONS + 1)
+            range(1, manifest_contract.MAX_SUPPORTED_SCHEMA_VERSIONS + 1)
         )
     )
-    ManifestClient(supported_schema_versions=((2**32) - 1,))
+    ManifestClient(
+        supported_schema_versions=(manifest_contract.MAX_SCHEMA_VERSION,)
+    )
 
 
 @pytest.mark.asyncio

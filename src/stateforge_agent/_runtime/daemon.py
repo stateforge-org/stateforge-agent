@@ -8,9 +8,12 @@ import signal
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from stateforge_protocol.sfp.endpoint_discovery.v1 import (
+    contract as discovery_contract,
+)
+
 from stateforge_agent import __version__
 from stateforge_agent._config.models import AgentConfiguration
-from stateforge_agent._identity import parse_canonical_uuid4
 from stateforge_agent._runtime.layout import (
     SYSTEM_RUNTIME_LAYOUT,
     RuntimeLayout,
@@ -188,10 +191,11 @@ async def _process_events(
 
 def _descriptor_provider_instance_id(path: Path) -> UUID | None:
     """Recover a Provider identity from a removed canonical descriptor name."""
-    if not path.name.endswith(PROVIDER_DESCRIPTOR_SUFFIX):
-        return None
-    value = path.name.removesuffix(PROVIDER_DESCRIPTOR_SUFFIX)
     try:
-        return parse_canonical_uuid4(value)
-    except ValueError:
+        return (
+            discovery_contract.provider_instance_id_from_descriptor_filename(
+                path.name
+            )
+        )
+    except discovery_contract.EndpointDescriptorContractError:
         return None
