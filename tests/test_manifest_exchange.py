@@ -20,7 +20,10 @@ from stateforge_agent._sfp._runtime.descriptor import (
     ProviderEndpointDescriptor,
 )
 from stateforge_agent._sfp._services.manifest.cache import ManifestCache
-from stateforge_agent._sfp._services.manifest.client import ManifestClient
+from stateforge_agent._sfp._services.manifest.client import (
+    _GET_MANIFEST_METHOD_PATH,
+    ManifestClient,
+)
 from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestDeclaration,
     cache_key,
@@ -173,6 +176,13 @@ async def _start_raw_peer(
     channel = create_provider_channel(f"127.0.0.1:{port}")
     await channel.channel_ready()
     return server, channel
+
+
+def test_manifest_method_path_comes_from_protocol_descriptor() -> None:
+    service = manifest_pb2.DESCRIPTOR.services_by_name["ManifestService"]
+    method = service.methods_by_name["GetManifest"]
+
+    assert f"/{service.full_name}/{method.name}" == _GET_MANIFEST_METHOD_PATH
 
 
 def test_validates_the_protocol_conformance_revision() -> None:
