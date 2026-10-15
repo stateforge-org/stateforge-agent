@@ -6,6 +6,8 @@ from stateforge_agent._sfp._runtime.errors import (
     SfpManifestError,
 )
 from stateforge_agent._sfp._runtime.sessions import (
+    ProviderAvailabilityState,
+    ProviderAvailabilityStatus,
     ProviderConnectionState,
     ProviderConnectionStatus,
     ProviderSession,
@@ -14,6 +16,8 @@ from stateforge_agent._sfp._runtime.sessions import (
 from stateforge_agent._sfp.version import SfpVersion
 
 __all__ = [
+    "ProviderAvailabilityState",
+    "ProviderAvailabilityStatus",
     "ProviderConnectionState",
     "ProviderConnectionStatus",
     "ProviderSession",

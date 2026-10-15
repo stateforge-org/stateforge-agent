@@ -1,0 +1,31 @@
+name: Stop Provider fixture
+description: Stop one Provider fixture and require its transient unit to exit.
+
+inputs:
+  container-name:
+    description: Fedora container running the Provider fixture.
+    required: true
+  unit-name:
+    description: Transient systemd unit running the Provider fixture.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Stop Provider process
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        UNIT_NAME: ${{ inputs.unit-name }}
+      run: |
+        set -euo pipefail
+        if [[ ! "${UNIT_NAME}" =~ ^stateforge-test-[a-z][a-z0-9-]{0,20}\.service$ ]]; then
+          printf 'Unsafe Provider fixture unit: %s\n' "${UNIT_NAME}" >&2
+          exit 2
+        fi
+        docker exec "${CONTAINER_NAME}" systemctl stop "${UNIT_NAME}"
+        if docker exec "${CONTAINER_NAME}" \
+          systemctl is-active --quiet "${UNIT_NAME}"; then
+          printf 'Provider fixture is still active: %s\n' "${UNIT_NAME}" >&2
+          exit 1
+        fi

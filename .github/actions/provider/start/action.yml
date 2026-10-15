@@ -16,6 +16,10 @@ inputs:
     description: Safe name used for the fixture user, unit, and state directory.
     required: false
     default: provider-a
+  provider-state-name:
+    description: Stable installation-state name; empty uses provider-name.
+    required: false
+    default: ""
   provider-identity:
     description: Manifest identity declared by the dummy Provider.
     required: false
@@ -47,15 +51,23 @@ runs:
         FIXTURE_PATH: ${{ inputs.fixture-path }}
         PROVIDER_IDENTITY: ${{ inputs.provider-identity }}
         PROVIDER_NAME: ${{ inputs.provider-name }}
+        PROVIDER_STATE_NAME: ${{ inputs.provider-state-name }}
         TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
         WHEEL_DIRECTORY: ${{ inputs.wheel-directory }}
       run: |
+        set -euo pipefail
         if [[ ! "${PROVIDER_NAME}" =~ ^[a-z][a-z0-9-]{0,20}$ ]]; then
           printf 'Unsafe Provider fixture name: %s\n' "${PROVIDER_NAME}" >&2
           exit 2
         fi
+        state_name="${PROVIDER_STATE_NAME:-${PROVIDER_NAME}}"
+        if [[ ! "${state_name}" =~ ^[a-z][a-z0-9-]{0,20}$ ]]; then
+          printf 'Unsafe Provider fixture state name: %s\n' \
+            "${state_name}" >&2
+          exit 2
+        fi
         fixture_root="/opt/stateforge-fixtures/${PROVIDER_NAME}"
-        state_directory="/var/lib/stateforge-provider-fixtures/${PROVIDER_NAME}"
+        state_directory="/var/lib/stateforge-provider-fixtures/${state_name}"
         service_user="sf-${PROVIDER_NAME}"
         unit_name="stateforge-test-${PROVIDER_NAME}.service"
 

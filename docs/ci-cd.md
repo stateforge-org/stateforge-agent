@@ -20,17 +20,22 @@ operation.
 │   │       │   └── manifest-exchange/
 │   │       ├── lifecycle/
 │   │       │   └── multiple-providers/
+│   │       ├── health/
+│   │       │   └── provider-availability/
 │   │       ├── adversarial/
 │   │       │   └── invalid-descriptor/
 │   │       └── destructive/
 │   │           └── uninstall-reinstall/
 │   ├── agent/
+│   │   ├── assert-availability/
 │   │   ├── install/
 │   │   ├── start/
 │   │   └── collect-evidence/
 │   └── provider/
 │       ├── create-fixture/
+│       ├── set-health/
 │       ├── start/
+│       ├── stop/
 │       └── assert-manifest/
 └── workflows/
     ├── rpm-build.yml
@@ -59,7 +64,8 @@ downloads those exact bytes, then performs this sequence:
 6. Install the matching Protocol wheel and third-party runtime dependencies.
 7. Start the packaged `stateforge-agent.service` unit.
 8. Start a dummy Provider as a separate non-root systemd service.
-9. Wait for the Agent to accept that Provider's manifest.
+9. Wait for the Agent to accept that Provider's manifest and Provider-wide
+   Health Watch state.
 10. Prove the CLI, imported Python distribution, and RPM versions agree and
    that RPM owns the imported module.
 11. Capture bounded journals, process state, descriptors, package ownership,
@@ -105,10 +111,12 @@ Contents permission. The token is scoped to those two repositories, is not
 persisted by checkout, and expires automatically. A long-lived personal
 access token is neither required nor accepted by the workflow interface.
 
-The installed-system workflow currently runs four isolated scenarios:
+The installed-system workflow currently runs five isolated scenarios:
 
 - smoke: one public-API Provider completes manifest exchange;
 - lifecycle: two independent Provider processes are accepted concurrently;
+- health: real Providers drive initial replay, loss, recovery, concurrent
+  Watch streams, shutdown, and same-installation generation replacement;
 - adversarial: malformed discovery data is rejected without stopping the Agent;
 - destructive: the exact RPM is removed, installed again in a clean environment,
   and completes manifest exchange after reinstallation.
@@ -130,9 +138,12 @@ digest of each generated wheel.
 | `rpm/test-installed/cleanup` | Preserve evidence and remove the scenario environment. |
 | `agent/install` | Create clean Fedora, install the exact RPM and dependencies, and verify package ownership. |
 | `agent/start` | Start the packaged systemd unit and wait for an explicit readiness event. |
+| `agent/assert-availability` | Assert an exact Provider generation reached a local eligibility state. |
 | `agent/collect-evidence` | Capture bounded evidence, uninstall the RPM, and clean up. |
 | `provider/create-fixture` | Invoke the selected Protocol and Provider checkouts' canonical package-build actions and stage their wheels with a selected fixture. |
 | `provider/start` | Run the fixture as a separate non-root systemd service. |
+| `provider/set-health` | Drive a deterministic public Provider Health transition. |
+| `provider/stop` | Stop one fixture through its systemd unit. |
 | `provider/assert-manifest` | Assert the Agent accepted the Provider manifest. |
 
 The fixture itself is intentionally small Python test data because the public
@@ -164,11 +175,11 @@ assertions that distinguish that case. The reusable workflow gives every
 scenario its own job and clean container, so one failure cannot contaminate a
 later scenario.
 
-Use one of the `smoke`, `lifecycle`, `adversarial`, or `destructive` tiers. A
-scenario action must always invoke cleanup with `always()` so failure evidence
-is retained. Adding a normal scenario requires one action and one thin workflow
-job; it must not duplicate RPM installation, systemd readiness, evidence, or
-environment cleanup commands.
+Use one of the `smoke`, `lifecycle`, `health`, `adversarial`, or `destructive`
+tiers. A scenario action must always invoke cleanup with `always()` so failure
+evidence is retained. Adding a normal scenario requires one action and one thin
+workflow job; it must not duplicate RPM installation, systemd readiness,
+evidence, or environment cleanup commands.
 
 ## Adding a Provider fixture
 

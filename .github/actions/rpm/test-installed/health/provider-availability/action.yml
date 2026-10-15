@@ -1,0 +1,209 @@
+name: Test installed Provider availability monitoring
+description: Verify Agent eligibility from real Provider Health Watch streams.
+
+inputs:
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario's evidence.
+    required: false
+    default: dist/agent-system-test-evidence/provider-availability
+  fixture-directory:
+    description: Directory containing the exact Provider fixture bundle.
+    required: false
+    default: dist/provider-fixture
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare installed Agent
+      id: setup
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+        fixture-directory: ${{ inputs.fixture-directory }}
+
+    - name: Start first Provider
+      id: provider-a
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: provider-a
+        provider-identity: stateforge.test.health.a
+
+    - name: Require first Provider manifest
+      uses: ./.github/actions/provider/assert-manifest
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-a
+
+    - name: Require first Provider initial Health replay
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
+        state: available
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-a
+
+    - name: Start second Provider
+      id: provider-b
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: provider-b
+        provider-identity: stateforge.test.health.b
+
+    - name: Require concurrent second Health stream
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-b.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-b.outputs.endpoint-generation }}
+        state: available
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-b
+
+    - name: Publish first Provider NOT_SERVING
+      uses: ./.github/actions/provider/set-health
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        unit-name: ${{ steps.provider-a.outputs.unit-name }}
+        transition: not-serving
+
+    - name: Require admission to fail closed
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
+        state: not_serving
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-a
+
+    - name: Recover first Provider
+      uses: ./.github/actions/provider/set-health
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        unit-name: ${{ steps.provider-a.outputs.unit-name }}
+        transition: serving
+
+    - name: Require recovered admission
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
+        state: available
+        minimum-occurrences: "2"
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-a
+
+    - name: Fail the first Provider health hook
+      uses: ./.github/actions/provider/set-health
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        unit-name: ${{ steps.provider-a.outputs.unit-name }}
+        transition: hook-failure
+
+    - name: Require health-hook failure to fail closed
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
+        state: not_serving
+        minimum-occurrences: "2"
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-a
+
+    - name: Recover the failed health hook
+      uses: ./.github/actions/provider/set-health
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        unit-name: ${{ steps.provider-a.outputs.unit-name }}
+        transition: serving
+
+    - name: Require second recovery
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
+        state: available
+        minimum-occurrences: "3"
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-a
+
+    - name: Stop first Provider cleanly
+      uses: ./.github/actions/provider/stop
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        unit-name: ${{ steps.provider-a.outputs.unit-name }}
+
+    - name: Require shutdown to fail closed
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
+        state: unavailable
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-a
+
+    - name: Start replacement generation
+      id: provider-a-next
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: provider-a-next
+        provider-state-name: provider-a
+        provider-identity: stateforge.test.health.a
+
+    - name: Require generation advancement
+      shell: bash
+      env:
+        FIRST_GENERATION: ${{ steps.provider-a.outputs.endpoint-generation }}
+        REPLACEMENT_GENERATION: ${{ steps.provider-a-next.outputs.endpoint-generation }}
+      run: |
+        set -euo pipefail
+        if (( REPLACEMENT_GENERATION <= FIRST_GENERATION )); then
+          printf 'Replacement generation did not advance: %s -> %s\n' \
+            "${FIRST_GENERATION}" "${REPLACEMENT_GENERATION}" >&2
+          exit 1
+        fi
+
+    - name: Require replacement generation availability
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-a-next.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-a-next.outputs.endpoint-generation }}
+        state: available
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-a-next
+
+    - name: Stop concurrent second Provider
+      uses: ./.github/actions/provider/stop
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        unit-name: ${{ steps.provider-b.outputs.unit-name }}
+
+    - name: Require second Provider shutdown to fail closed
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider-b.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-b.outputs.endpoint-generation }}
+        state: unavailable
+        evidence-directory: ${{ inputs.evidence-directory }}/provider-b
+
+    - name: Preserve evidence and clean up
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        evidence-directory: ${{ inputs.evidence-directory }}

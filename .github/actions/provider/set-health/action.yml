@@ -1,0 +1,47 @@
+name: Set Provider fixture Health
+description: Publish one deterministic Provider-wide Health transition.
+
+inputs:
+  container-name:
+    description: Fedora container running the Provider fixture.
+    required: true
+  unit-name:
+    description: Transient systemd unit running the Provider fixture.
+    required: true
+  transition:
+    description: Public Health transition to request.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Publish Provider Health transition
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        TRANSITION: ${{ inputs.transition }}
+        UNIT_NAME: ${{ inputs.unit-name }}
+      run: |
+        set -euo pipefail
+        if [[ ! "${UNIT_NAME}" =~ ^stateforge-test-[a-z][a-z0-9-]{0,20}\.service$ ]]; then
+          printf 'Unsafe Provider fixture unit: %s\n' "${UNIT_NAME}" >&2
+          exit 2
+        fi
+        case "${TRANSITION}" in
+          serving)
+            signal_name=SIGUSR2
+            ;;
+          not-serving)
+            signal_name=SIGUSR1
+            ;;
+          hook-failure)
+            signal_name=SIGHUP
+            ;;
+          *)
+            printf 'Unknown Provider Health transition: %s\n' \
+              "${TRANSITION}" >&2
+            exit 2
+            ;;
+        esac
+        docker exec "${CONTAINER_NAME}" \
+          systemctl kill --signal "${signal_name}" "${UNIT_NAME}"

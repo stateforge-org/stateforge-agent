@@ -17,7 +17,8 @@ The current implementation provides:
 - protected local Provider endpoint discovery;
 - validated and reusable local gRPC channels;
 - SFP handshake and version negotiation;
-- bounded Provider manifest retrieval, validation, and declaration caching; and
+- bounded Provider manifest retrieval, validation, and declaration caching;
+- standard gRPC Health Watch-based operational eligibility; and
 - bounded reconnection and endpoint replacement.
 
 Providers run as separate processes. They expose vendor-specific behavior over
@@ -27,8 +28,11 @@ After a successful handshake, the Agent retrieves the Provider's complete
 manifest over the same SFP channel. A Provider is marked connected only after
 the manifest passes the negotiated schema, canonical-revision, size, embedded
 JSON Schema, and secret-safety checks. Connected describes the local SFP
-transport and accepted declaration; it does not assert that the Provider or
-its third-party component is operationally healthy.
+transport and accepted declaration. The Agent separately watches the
+Provider-wide standard Health key on that same channel. New work becomes
+eligible only while the exact current generation has an accepted manifest and
+reports `SERVING`; unknown, failed, unsupported, or `NOT_SERVING` health fails
+closed without rewriting work that was already admitted.
 
 ## Requirements
 
@@ -99,7 +103,8 @@ mkdocs build --strict
 
 The test suite includes integration coverage for Provider discovery, channel
 establishment, SFP negotiation, manifest exchange, endpoint replacement,
-connection loss, and recovery.
+Provider Health transitions, eligibility fencing, connection loss, and
+recovery.
 
 ## Documentation
 
