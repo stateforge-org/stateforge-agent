@@ -21,6 +21,7 @@ from stateforge_agent._sfp import (
     CapabilitySupportState,
     ProviderAvailabilityState,
     ProviderSessionManager,
+    SfpCapabilityAssessmentRequestError,
     SfpCapabilityAssessmentUnavailableError,
     SfpVersion,
 )
@@ -90,6 +91,32 @@ def _capability_attempt_digests(event_log: Path) -> tuple[str, ...]:
         for event in event_log.read_text().splitlines()
         if event.startswith(_CAPABILITY_ATTEMPT_PREFIX)
     )
+
+
+async def _require_local_request_rejections(
+    manager: ProviderSessionManager,
+    provider_instance_id: UUID,
+    event_log: Path,
+) -> None:
+    """Reject invalid and undeclared operations before Provider code runs."""
+    attempts_before = _capability_attempt_digests(event_log)
+    for operation_identifier in (
+        "invalid",
+        "stateforge.test/not-declared@1",
+    ):
+        try:
+            await manager.assess_capabilities(
+                provider_instance_id,
+                (operation_identifier,),
+            )
+        except SfpCapabilityAssessmentRequestError:
+            pass
+        else:
+            raise AssertionError(
+                "Agent accepted an invalid or undeclared operation"
+            )
+    if _capability_attempt_digests(event_log) != attempts_before:
+        raise AssertionError("Rejected request reached Provider code")
 
 
 async def _require_initial_assessment(
@@ -241,6 +268,11 @@ async def _run(arguments: argparse.Namespace) -> dict[str, object]:
             manager,
             provider_instance_id,
             ProviderAvailabilityState.AVAILABLE,
+        )
+        await _require_local_request_rejections(
+            manager,
+            provider_instance_id,
+            event_log,
         )
         assessment = await _require_initial_assessment(
             manager,

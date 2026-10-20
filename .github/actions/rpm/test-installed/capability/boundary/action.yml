@@ -1,0 +1,43 @@
+name: Test installed Capability Assessment boundary
+description: Verify one adversarial boundary through the exact Agent RPM.
+
+inputs:
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario evidence.
+    required: true
+  fixture-directory:
+    description: Directory containing exact Provider and Protocol packages.
+    required: false
+    default: dist/provider-fixture
+  scenario:
+    description: Adversarial boundary scenario to execute.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare installed Agent
+      id: setup
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+        fixture-directory: ${{ inputs.fixture-directory }}
+
+    - name: Exercise installed Capability Assessment boundary
+      uses: ./.github/actions/agent/assert-capability-boundary
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        scenario: ${{ inputs.scenario }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Preserve evidence and clean up
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        evidence-directory: ${{ inputs.evidence-directory }}

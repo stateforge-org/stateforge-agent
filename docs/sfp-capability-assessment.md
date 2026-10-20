@@ -69,6 +69,10 @@ Provider service. It also changes a target permission observed by a Provider
 requirement check and requires fresh operation-specific evidence while
 Provider-wide availability remains `AVAILABLE`.
 
+Before the first valid call, the same installed Agent rejects malformed and
+undeclared operation identifiers locally and proves that neither request
+reaches Provider code.
+
 The same scenario then transitions the Provider from `SERVING` to
 `NOT_SERVING` and back. The Agent must block assessment while unavailable,
 discard the old evidence across the availability transition, and obtain a new
@@ -87,3 +91,10 @@ The scenario verifies every support outcome, unmet and unknown requirements,
 exact-scope evidence reuse, target immutability, and absence of operation
 dispatch. Its JSON result, dependency provenance, journals, package ownership,
 and RPM verification are retained as CI evidence.
+
+Separate clean-container jobs use the same RPM-installed client to verify a
+finite timeout, malformed protobuf rejection, mismatched session/generation/
+manifest response fences, and both canonical message-size limits. These
+adversarial peers deliberately violate the Provider side of the contract;
+the normal scenario remains the authoritative real Provider Python
+integration.

@@ -292,6 +292,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
     """Keep reusable behavior organized by domain rather than filename tags."""
     expected = {
         "agent/assert-availability",
+        "agent/assert-capability-boundary",
         "agent/assert-capability-assessment",
         "agent/collect-evidence",
         "agent/install",
@@ -304,6 +305,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "rpm/build",
         "rpm/test-installed/adversarial/invalid-descriptor",
         "rpm/test-installed/capability/assessment",
+        "rpm/test-installed/capability/boundary",
         "rpm/test-installed/cleanup",
         "rpm/test-installed/destructive/uninstall-reinstall",
         "rpm/test-installed/health/provider-availability",
@@ -419,6 +421,13 @@ def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (
     )
 
     assert "capability-assessment" in workflow
+    for boundary in (
+        "capability-timeout",
+        "capability-malformed",
+        "capability-mismatch",
+        "capability-limits",
+    ):
+        assert boundary in workflow
     assert "./.github/actions/rpm/test-installed/setup" in scenario
     assert "./.github/actions/provider/start" in scenario
     assert "./.github/actions/agent/assert-availability" in scenario
@@ -451,3 +460,19 @@ def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (
     assert "RequirementCheckResult.unsatisfied" in fixture
     assert "RequirementCheckResult.incompatible" in fixture
     assert "RequirementCheckResult.unknown" in fixture
+
+    boundary_action = read(
+        ACTIONS / "agent" / "assert-capability-boundary" / "action.yml"
+    )
+    boundary_assertion = read(
+        ACTIONS / "agent" / "assert-capability-boundary" / "assert.py"
+    )
+    assert "/usr/bin/python3" in boundary_action
+    assert "SfpCapabilityAssessmentDeadlineError" in boundary_assertion
+    assert (
+        "SfpCapabilityAssessmentMalformedResponseError" in boundary_assertion
+    )
+    assert "SfpCapabilityAssessmentLimitError" in boundary_assertion
+    assert "session_id" in boundary_assertion
+    assert "endpoint_generation" in boundary_assertion
+    assert "manifest_revision" in boundary_assertion
