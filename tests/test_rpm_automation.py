@@ -1,6 +1,7 @@
 """Contract tests for reusable RPM and installed-system automation."""
 
 from pathlib import Path
+from runpy import run_path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -13,6 +14,27 @@ HEALTH_SCENARIO_PROVIDER_COUNT = 3
 def read(path: Path) -> str:
     """Read one automation file as UTF-8 text."""
     return path.read_text(encoding="utf-8")
+
+
+def test_capability_assertion_treats_a_missing_event_log_as_no_calls(
+    tmp_path: Path,
+) -> None:
+    """Permit local rejections before the Provider records its first RPC."""
+    assertion = run_path(
+        str(ACTIONS / "agent" / "assert-capability-assessment" / "assert.py")
+    )
+    attempt_digests = assertion["_capability_attempt_digests"]
+    event_log = tmp_path / "events.log"
+
+    assert attempt_digests(event_log) == ()
+
+    event_log.write_text(
+        "provider-started\n"
+        "rpc:capability-assessment:first\n"
+        "rpc:capability-assessment:second\n",
+        encoding="utf-8",
+    )
+    assert attempt_digests(event_log) == ("first", "second")
 
 
 def test_rpm_build_has_one_authoritative_command() -> None:

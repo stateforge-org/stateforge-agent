@@ -86,9 +86,13 @@ def _support_states(
 
 def _capability_attempt_digests(event_log: Path) -> tuple[str, ...]:
     """Read request digests recorded by the real Provider RPC boundary."""
+    try:
+        events = event_log.read_text().splitlines()
+    except FileNotFoundError:
+        return ()
     return tuple(
         event.removeprefix(_CAPABILITY_ATTEMPT_PREFIX)
-        for event in event_log.read_text().splitlines()
+        for event in events
         if event.startswith(_CAPABILITY_ATTEMPT_PREFIX)
     )
 
