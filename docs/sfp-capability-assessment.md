@@ -31,6 +31,14 @@ The current Capability Assessment contract intentionally has no generic
 target or resource field. Target-specific input belongs to the relevant
 operation payload when operation admission and execution are implemented.
 
+The Capability Assessment service coordinator owns the complete procedure:
+context conversion, request construction, manifest-declaration checks,
+current-scope construction, retry policy, response normalization, and bounded
+evidence reuse. The generic Provider session manager exposes only a narrow
+lease containing the exact session and availability fences, verifies that the
+lease remains current, and invalidates evidence on lifecycle transitions.
+This keeps procedure semantics out of generic connection lifecycle code.
+
 ## Safety boundaries
 
 Before sending a request, the Agent validates it with the public

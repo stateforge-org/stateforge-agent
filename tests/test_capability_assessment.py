@@ -75,6 +75,22 @@ _OPERATIONS = (
 )
 
 
+def test_capability_orchestration_is_owned_by_its_service() -> None:
+    root = Path(__file__).parents[1] / "src/stateforge_agent/_sfp"
+    sessions = (root / "_runtime/sessions.py").read_text()
+    coordinator = (
+        root / "_services/capability_assessment/coordinator.py"
+    ).read_text()
+
+    assert "CapabilityAssessmentCoordinator" in sessions
+    assert "CapabilityAssessmentCache" not in sessions
+    assert "capability_assessment_pb2" not in sessions
+    assert "ParseDict" not in sessions
+    assert "def _request(" in coordinator
+    assert "def _scope(" in coordinator
+    assert "CapabilityAssessmentCache" in coordinator
+
+
 def _request(
     operation_identifiers: tuple[str, ...] = _OPERATIONS,
 ) -> capability_assessment_pb2.AssessCapabilitiesRequest:
