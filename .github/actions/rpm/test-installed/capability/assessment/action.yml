@@ -35,6 +35,7 @@ runs:
         wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
         provider-name: provider-a
         provider-identity: stateforge.test.capability
+        capability-unavailable-once: "true"
 
     - name: Require Agent readiness
       uses: ./.github/actions/agent/assert-availability

@@ -15,11 +15,6 @@ from importlib.metadata import version
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import grpc
-from stateforge_protocol.sfp.capability_assessment.v1 import (
-    capability_assessment_pb2,
-)
-
 from stateforge_agent._sfp import (
     CapabilityAssessment,
     CapabilityRequirementState,
@@ -30,12 +25,6 @@ from stateforge_agent._sfp import (
     SfpVersion,
 )
 from stateforge_agent._sfp._runtime.descriptor import load_provider_descriptor
-from stateforge_agent._sfp._services.capability_assessment.client import (
-    CapabilityAssessmentClient,
-)
-from stateforge_agent._sfp._services.capability_assessment.models import (
-    CapabilityAssessmentScope,
-)
 
 _DISCOVERY_DIRECTORY = Path("/run/stateforge-agent/providers")
 _OPERATIONS = (
@@ -51,29 +40,7 @@ _EXPECTED_STATES = (
     CapabilitySupportState.INDETERMINATE,
 )
 _EXPECTED_RETRY_ATTEMPTS = 2
-
-
-class _UnavailableOnceRequester:
-    """Inject one transport failure before delegating to the real Provider."""
-
-    def __init__(self) -> None:
-        self._delegate = CapabilityAssessmentClient()
-        self.serialized_requests: list[bytes] = []
-
-    async def assess(
-        self,
-        channel: grpc.aio.Channel,
-        request: capability_assessment_pb2.AssessCapabilitiesRequest,
-        *,
-        scope: CapabilityAssessmentScope,
-    ) -> CapabilityAssessment:
-        """Fail once, then execute the installed client's real RPC path."""
-        self.serialized_requests.append(request.SerializeToString())
-        if len(self.serialized_requests) == 1:
-            raise SfpCapabilityAssessmentUnavailableError(
-                "Injected one-shot transport unavailability"
-            )
-        return await self._delegate.assess(channel, request, scope=scope)
+_CAPABILITY_ATTEMPT_PREFIX = "rpc:capability-assessment:"
 
 
 def _arguments() -> argparse.Namespace:
@@ -116,20 +83,29 @@ def _support_states(
     return tuple(item.support_state for item in assessment.findings)
 
 
+def _capability_attempt_digests(event_log: Path) -> tuple[str, ...]:
+    """Read request digests recorded by the real Provider RPC boundary."""
+    return tuple(
+        event.removeprefix(_CAPABILITY_ATTEMPT_PREFIX)
+        for event in event_log.read_text().splitlines()
+        if event.startswith(_CAPABILITY_ATTEMPT_PREFIX)
+    )
+
+
 async def _require_initial_assessment(
     manager: ProviderSessionManager,
     provider_instance_id: UUID,
-    requester: _UnavailableOnceRequester,
+    event_log: Path,
 ) -> CapabilityAssessment:
-    """Prove bounded retry, normalized evidence, and exact cache scope."""
+    """Prove real-boundary retry, normalized evidence, and cache scope."""
     assessment = await manager.assess_capabilities(
         provider_instance_id,
         _OPERATIONS,
         execution_context={"scenario": "installed-agent"},
     )
-    retry_requests = tuple(requester.serialized_requests)
-    if len(retry_requests) != _EXPECTED_RETRY_ATTEMPTS or (
-        retry_requests[0] != retry_requests[1]
+    retry_digests = _capability_attempt_digests(event_log)
+    if len(retry_digests) != _EXPECTED_RETRY_ATTEMPTS or (
+        retry_digests[0] != retry_digests[1]
     ):
         raise AssertionError(
             "Capability Assessment retry did not preserve the request"
@@ -253,13 +229,11 @@ async def _run(arguments: argparse.Namespace) -> dict[str, object]:
     event_log = state_directory / "events.log"
     before = _digest(target)
     original_mode = stat.S_IMODE(target.stat().st_mode)
-    requester = _UnavailableOnceRequester()
     manager = ProviderSessionManager(
         agent_runtime_id=uuid4(),
         agent_software_version=version("stateforge-agent"),
         supported_sfp_versions=(SfpVersion(major=1, minor=0),),
         capability_assessment_retry_initial_delay_seconds=0.05,
-        capability_assessment_client=requester,
     )
     try:
         await manager.establish(descriptor)
@@ -271,7 +245,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, object]:
         assessment = await _require_initial_assessment(
             manager,
             provider_instance_id,
-            requester,
+            event_log,
         )
         restricted = await _require_environment_refresh(
             manager,

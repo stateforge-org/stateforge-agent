@@ -61,12 +61,13 @@ available only through the explicit evidence lookup API and is never used by
 
 ## Installed verification
 
-The RPM installed-system scenario injects one transient `UNAVAILABLE` result
-at the Agent request seam, requires the retry to preserve the exact serialized
-request, and then delegates to a separate real Provider Python process. It also
-changes a target permission observed by a Provider requirement check and
-requires fresh operation-specific evidence while Provider-wide availability
-remains `AVAILABLE`.
+The RPM installed-system scenario makes the separate Provider process return
+one transient `UNAVAILABLE` result from its real gRPC service boundary. It
+requires the installed Agent client to translate that status, retry, preserve
+the exact serialized request, and then complete against the production
+Provider service. It also changes a target permission observed by a Provider
+requirement check and requires fresh operation-specific evidence while
+Provider-wide availability remains `AVAILABLE`.
 
 The same scenario then transitions the Provider from `SERVING` to
 `NOT_SERVING` and back. The Agent must block assessment while unavailable,

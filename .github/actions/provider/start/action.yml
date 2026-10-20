@@ -28,6 +28,10 @@ inputs:
     description: Maximum time to wait for endpoint publication.
     required: false
     default: "60"
+  capability-unavailable-once:
+    description: Make the first real Capability Assessment RPC unavailable.
+    required: false
+    default: "false"
 
 outputs:
   provider-instance-id:
@@ -47,6 +51,7 @@ runs:
       id: start
       shell: bash
       env:
+        CAPABILITY_UNAVAILABLE_ONCE: ${{ inputs.capability-unavailable-once }}
         CONTAINER_NAME: ${{ inputs.container-name }}
         FIXTURE_PATH: ${{ inputs.fixture-path }}
         PROVIDER_IDENTITY: ${{ inputs.provider-identity }}
@@ -112,6 +117,8 @@ runs:
             "STATEFORGE_TEST_EVENT_LOG=${event_log}" \
           --setenv \
             "STATEFORGE_TEST_TARGET_PATH=${target_path}" \
+          --setenv \
+            "STATEFORGE_TEST_CAPABILITY_UNAVAILABLE_ONCE=${CAPABILITY_UNAVAILABLE_ONCE}" \
           /usr/bin/python3 "${fixture_root}/provider.py"
 
         identity_path="${state_directory}/identity.json"

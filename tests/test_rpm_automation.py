@@ -410,7 +410,10 @@ def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (
     assert "ProviderSessionManager" in assertion
     assert "assess_capabilities" in assertion
     assert "cached_capability_assessment" in assertion
-    assert "_UnavailableOnceRequester" in assertion
+    assert "_UnavailableOnceRequester" not in assertion
+    assert "capability-unavailable-once" in scenario
+    assert "CapabilityAssessmentService.AssessCapabilities" in fixture
+    assert "grpc.StatusCode.UNAVAILABLE" in fixture
     assert "retry did not preserve the request" in assertion
     assert "ProviderAvailabilityState.NOT_SERVING" in assertion
     assert (

@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 import signal
 from pathlib import Path
 
+import grpc
+from stateforge_protocol.sfp.capability_assessment.v1 import (
+    capability_assessment_pb2,
+)
 from stateforge_provider import (
     HealthStatus,
     Platform,
@@ -17,6 +22,17 @@ from stateforge_provider import (
     operation,
     requirement_check,
 )
+from stateforge_provider._services.capability_assessment.service import (
+    CapabilityAssessmentService,
+)
+
+_CAPABILITY_ATTEMPT_PREFIX = "rpc:capability-assessment:"
+
+
+def _record_event(path: Path, event: str) -> None:
+    """Append one deterministic fixture event."""
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(f"{event}\n")
 
 
 class FixtureInput(ProviderModel):
@@ -190,8 +206,41 @@ class ManifestFixtureProvider(Provider):
         await self.refresh_health()
 
 
+def _install_capability_unavailable_once() -> None:
+    """Fail the first real Provider RPC at its gRPC service boundary."""
+    if os.environ["STATEFORGE_TEST_CAPABILITY_UNAVAILABLE_ONCE"] != "true":
+        return
+    original = CapabilityAssessmentService.AssessCapabilities
+    unavailable = True
+    event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
+
+    async def assess_capabilities(
+        service: CapabilityAssessmentService,
+        request: capability_assessment_pb2.AssessCapabilitiesRequest,
+        context: grpc.aio.ServicerContext[
+            capability_assessment_pb2.AssessCapabilitiesRequest,
+            capability_assessment_pb2.AssessCapabilitiesResponse,
+        ],
+    ) -> capability_assessment_pb2.AssessCapabilitiesResponse:
+        nonlocal unavailable
+        digest = hashlib.sha256(
+            request.SerializeToString(deterministic=True)
+        ).hexdigest()
+        _record_event(event_log, f"{_CAPABILITY_ATTEMPT_PREFIX}{digest}")
+        if unavailable:
+            unavailable = False
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                "Injected fixture unavailability",
+            )
+        return await original(service, request, context)
+
+    CapabilityAssessmentService.AssessCapabilities = assess_capabilities
+
+
 def main() -> None:
     """Run the Provider fixture until its service manager stops it."""
+    _install_capability_unavailable_once()
     ManifestFixtureProvider(
         discovery_directory=Path(
             os.environ["STATEFORGE_TEST_DISCOVERY_DIRECTORY"]
