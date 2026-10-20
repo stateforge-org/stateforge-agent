@@ -50,7 +50,9 @@ logs or public exceptions.
 Validated results may be retained as bounded evidence. A cache key includes
 the Provider installation ID, endpoint generation, negotiated session ID,
 manifest revision, local availability generation, ordered operation set, and
-deterministically serialized execution context.
+SHA-256 digest of the deterministically serialized execution context. The
+cache has both an entry-count limit and an aggregate serialized-evidence byte
+budget; an individual result larger than that budget is not retained.
 
 Any session, manifest, endpoint, availability, operation-set, or context
 change therefore misses or invalidates the old entry. Cached evidence is

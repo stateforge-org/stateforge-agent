@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import secrets
 from collections.abc import Callable, Mapping
@@ -1475,7 +1476,7 @@ def _assessment_scope(
         manifest_revision=session.manifest.key.revision,
         availability_generation=availability_generation,
         operation_identifiers=operation_identifiers,
-        execution_context=execution_context.SerializeToString(
-            deterministic=True
-        ),
+        execution_context_sha256=hashlib.sha256(
+            execution_context.SerializeToString(deterministic=True)
+        ).digest(),
     )

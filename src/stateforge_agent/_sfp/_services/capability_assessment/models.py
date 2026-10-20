@@ -73,7 +73,7 @@ class CapabilityAssessmentScope:
     manifest_revision: str
     availability_generation: int
     operation_identifiers: tuple[str, ...]
-    execution_context: bytes
+    execution_context_sha256: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,3 +85,13 @@ class CapabilityAssessment:
     assessment_id: UUID
     assessed_at: datetime
     findings: tuple[CapabilityFinding, ...]
+    wire_size_bytes: int
+
+    def __post_init__(self) -> None:
+        """Reject invalid retention weights from alternate requesters."""
+        if (
+            isinstance(self.wire_size_bytes, bool)
+            or not isinstance(self.wire_size_bytes, int)
+            or self.wire_size_bytes <= 0
+        ):
+            raise ValueError("wire_size_bytes must be a positive integer")

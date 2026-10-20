@@ -249,6 +249,7 @@ def _normalize(
         assessment_id=UUID(response.assessment_id),
         assessed_at=response.assessment_timestamp.ToDatetime(tzinfo=UTC),
         findings=tuple(_normalize_finding(item) for item in response.findings),
+        wire_size_bytes=response.ByteSize(),
     )
 
 

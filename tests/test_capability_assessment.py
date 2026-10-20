@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import traceback
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -39,6 +41,9 @@ from stateforge_agent._sfp import (
 )
 from stateforge_agent._sfp._runtime import sessions as sessions_module
 from stateforge_agent._sfp._runtime.channel import create_provider_channel
+from stateforge_agent._sfp._services.capability_assessment.cache import (
+    CapabilityAssessmentCache,
+)
 from stateforge_agent._sfp._services.capability_assessment.client import (
     _ASSESS_METHOD_PATH,
     CapabilityAssessmentClient,
@@ -192,7 +197,7 @@ def _scope() -> CapabilityAssessmentScope:
         manifest_revision=_MANIFEST_REVISION,
         availability_generation=2,
         operation_identifiers=_OPERATIONS,
-        execution_context=b"",
+        execution_context_sha256=hashlib.sha256(b"").digest(),
     )
 
 
@@ -433,7 +438,47 @@ class _ScriptedRequester:
             assessment_id=uuid4(),
             assessed_at=datetime.now(UTC),
             findings=(),
+            wire_size_bytes=1,
         )
+
+
+def test_cache_enforces_aggregate_evidence_byte_limit() -> None:
+    cache = CapabilityAssessmentCache(capacity=128, max_bytes=2)
+    first = CapabilityAssessment(
+        scope=_scope(),
+        request_id=_REQUEST_ID,
+        assessment_id=_ASSESSMENT_ID,
+        assessed_at=datetime.now(UTC),
+        findings=(),
+        wire_size_bytes=2,
+    )
+    second = replace(
+        first,
+        scope=replace(first.scope, availability_generation=3),
+        assessment_id=uuid4(),
+    )
+
+    cache.put(first)
+    cache.put(second)
+
+    assert cache.get(first.scope) is None
+    assert cache.get(second.scope) is second
+
+
+def test_cache_does_not_retain_an_oversized_entry() -> None:
+    cache = CapabilityAssessmentCache(capacity=128, max_bytes=1)
+    assessment = CapabilityAssessment(
+        scope=_scope(),
+        request_id=_REQUEST_ID,
+        assessment_id=_ASSESSMENT_ID,
+        assessed_at=datetime.now(UTC),
+        findings=(),
+        wire_size_bytes=2,
+    )
+
+    cache.put(assessment)
+
+    assert cache.get(assessment.scope) is None
 
 
 def _manifest(
