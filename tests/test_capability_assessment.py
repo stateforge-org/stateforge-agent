@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -352,6 +353,10 @@ async def test_client_maps_rpc_failures_without_exposing_details(
         await server.stop(grace=None)
 
     assert _SENSITIVE_DETAILS not in str(error.value)
+    assert error.value.__context__ is None
+    assert _SENSITIVE_DETAILS not in "".join(
+        traceback.format_exception(error.value)
+    )
 
 
 @pytest.mark.asyncio

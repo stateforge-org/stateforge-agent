@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC
-from typing import Protocol
+from typing import Never, Protocol
 from uuid import UUID
 
 import grpc
@@ -143,10 +143,13 @@ class CapabilityAssessmentClient:
             ),
             response_deserializer=_decode_response,
         )
+        failure_code: grpc.StatusCode | None = None
         try:
             decoded = await call(request, timeout=self._timeout_seconds)
         except grpc.aio.AioRpcError as error:
-            _raise_rpc_error(error.code())
+            failure_code = error.code()
+        if failure_code is not None:
+            _raise_rpc_error(failure_code)
 
         if decoded.limit_exceeded:
             raise SfpCapabilityAssessmentLimitError(
@@ -203,7 +206,7 @@ def _decode_response(payload: bytes) -> _DecodedCapabilityResponse:
     return _DecodedCapabilityResponse(response=response)
 
 
-def _raise_rpc_error(code: grpc.StatusCode) -> None:
+def _raise_rpc_error(code: grpc.StatusCode) -> Never:
     """Translate only stable gRPC status codes into sanitized Agent errors."""
     if code is grpc.StatusCode.UNAVAILABLE:
         raise SfpCapabilityAssessmentUnavailableError(
