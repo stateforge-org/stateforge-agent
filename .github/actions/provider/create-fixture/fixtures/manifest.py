@@ -8,7 +8,27 @@ import os
 import signal
 from pathlib import Path
 
-from stateforge_provider import HealthStatus, Platform, Provider
+from stateforge_provider import (
+    HealthStatus,
+    Platform,
+    Provider,
+    ProviderModel,
+    RequirementCheckResult,
+    operation,
+    requirement_check,
+)
+
+
+class FixtureInput(ProviderModel):
+    """Describe operation input without invoking it during assessment."""
+
+    value: str
+
+
+class FixtureResult(ProviderModel):
+    """Describe operation output without invoking it during assessment."""
+
+    value: str
 
 
 class ManifestFixtureProvider(Provider):
@@ -36,6 +56,8 @@ class ManifestFixtureProvider(Provider):
         self._health_status = HealthStatus.healthy()
         self._fail_health = False
         self._health_tasks: set[asyncio.Task[None]] = set()
+        self._event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
+        self._target_path = Path(os.environ["STATEFORGE_TEST_TARGET_PATH"])
 
     async def on_startup(self) -> None:
         """Install deterministic health transitions for system tests."""
@@ -73,6 +95,77 @@ class ManifestFixtureProvider(Provider):
         if self._fail_health:
             raise RuntimeError("fixture health hook failed")
         return self._health_status
+
+    @requirement_check(
+        "runtime.target.readable",
+        "Fixture target is readable",
+    )
+    async def target_readable(self) -> RequirementCheckResult:
+        """Inspect the target without changing its contents or metadata."""
+        self._record("requirement:runtime.target.readable")
+        if os.access(self._target_path, os.R_OK):
+            return RequirementCheckResult.satisfied()
+        return RequirementCheckResult.unsatisfied()
+
+    @requirement_check("runtime.pending", "Pending fixture prerequisite")
+    async def pending(self) -> RequirementCheckResult:
+        """Expose one deterministic unmet prerequisite."""
+        self._record("requirement:runtime.pending")
+        return RequirementCheckResult.unsatisfied()
+
+    @requirement_check("runtime.incompatible", "Incompatible fixture runtime")
+    async def incompatible(self) -> RequirementCheckResult:
+        """Expose conclusive negative runtime evidence."""
+        self._record("requirement:runtime.incompatible")
+        return RequirementCheckResult.incompatible("Fixture incompatibility")
+
+    @requirement_check("runtime.unknown", "Unobservable fixture prerequisite")
+    async def unknown(self) -> RequirementCheckResult:
+        """Expose an unresolved prerequisite without guessing."""
+        self._record("requirement:runtime.unknown")
+        return RequirementCheckResult.unknown("Fixture evidence unavailable")
+
+    @operation(
+        "stateforge.test/inspect@1",
+        requires=("runtime.target.readable",),
+    )
+    async def inspect(self, request: FixtureInput) -> FixtureResult:
+        """Declare a generic supported operation that is never dispatched."""
+        self._record("operation:inspect")
+        return FixtureResult(value=request.value)
+
+    @operation(
+        "stateforge.test/snapshot@1",
+        implements=("stateforge.backup.v1.prepare",),
+        requires=("runtime.target.readable", "runtime.pending"),
+    )
+    async def snapshot(self, request: FixtureInput) -> FixtureResult:
+        """Declare a profile-related operation with an unmet prerequisite."""
+        self._record("operation:snapshot")
+        return FixtureResult(value=request.value)
+
+    @operation(
+        "stateforge.test/unsupported@1",
+        requires=("runtime.incompatible",),
+    )
+    async def unsupported(self, request: FixtureInput) -> FixtureResult:
+        """Declare one operation with conclusive negative evidence."""
+        self._record("operation:unsupported")
+        return FixtureResult(value=request.value)
+
+    @operation(
+        "stateforge.test/indeterminate@1",
+        requires=("runtime.unknown",),
+    )
+    async def indeterminate(self, request: FixtureInput) -> FixtureResult:
+        """Declare one operation whose current support is unresolved."""
+        self._record("operation:indeterminate")
+        return FixtureResult(value=request.value)
+
+    def _record(self, event: str) -> None:
+        """Record fixture-only evidence outside the inspected target."""
+        with self._event_log.open("a", encoding="utf-8") as stream:
+            stream.write(f"{event}\n")
 
     def _schedule_health(
         self,

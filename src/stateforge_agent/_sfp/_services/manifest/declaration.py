@@ -56,6 +56,14 @@ class ManifestDeclaration:
             raise RuntimeError("Validated manifest cache entry is corrupt")
         return document
 
+    @property
+    def operation_identifiers(self) -> frozenset[str]:
+        """Return the versioned operations declared by this snapshot."""
+        operations = self.as_dict().get("operations")
+        if not isinstance(operations, dict):
+            raise RuntimeError("Validated manifest cache entry is corrupt")
+        return frozenset(operations)
+
 
 def cache_key(
     response: manifest_pb2.GetManifestResponse,

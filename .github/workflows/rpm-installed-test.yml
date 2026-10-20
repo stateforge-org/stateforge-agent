@@ -92,6 +92,7 @@ jobs:
       matrix:
         scenario:
           - manifest-exchange
+          - capability-assessment
           - provider-availability
           - multiple-providers
           - invalid-descriptor
@@ -117,6 +118,13 @@ jobs:
       - name: Run manifest-exchange scenario
         if: ${{ matrix.scenario == 'manifest-exchange' }}
         uses: ./.github/actions/rpm/test-installed/smoke/manifest-exchange
+        with:
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          fixture-directory: dist/provider-fixture
+
+      - name: Run Capability Assessment scenario
+        if: ${{ matrix.scenario == 'capability-assessment' }}
+        uses: ./.github/actions/rpm/test-installed/capability/assessment
         with:
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
           fixture-directory: dist/provider-fixture

@@ -275,6 +275,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
     """Keep reusable behavior organized by domain rather than filename tags."""
     expected = {
         "agent/assert-availability",
+        "agent/assert-capability-assessment",
         "agent/collect-evidence",
         "agent/install",
         "agent/start",
@@ -285,6 +286,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "provider/stop",
         "rpm/build",
         "rpm/test-installed/adversarial/invalid-descriptor",
+        "rpm/test-installed/capability/assessment",
         "rpm/test-installed/cleanup",
         "rpm/test-installed/destructive/uninstall-reinstall",
         "rpm/test-installed/health/provider-availability",
@@ -335,6 +337,7 @@ def test_each_installed_scenario_is_an_independent_action() -> None:
         "lifecycle",
         "health",
         "adversarial",
+        "capability",
         "destructive",
     }
     for scenario in scenarios:
@@ -373,3 +376,58 @@ def test_installed_health_scenario_uses_real_artifacts_and_processes() -> None:
     assert "refresh_health" in fixture
     assert "Provider availability changed:" in assertion
     assert "endpoint_generation=${ENDPOINT_GENERATION}" in assertion
+
+
+def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (
+    None
+):
+    """Keep A3 evidence on exact packages and independent SFP processes."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario = read(
+        ACTIONS
+        / "rpm"
+        / "test-installed"
+        / "capability"
+        / "assessment"
+        / "action.yml"
+    )
+    assertion_action = read(
+        ACTIONS / "agent" / "assert-capability-assessment" / "action.yml"
+    )
+    assertion = read(
+        ACTIONS / "agent" / "assert-capability-assessment" / "assert.py"
+    )
+    fixture = read(
+        ACTIONS / "provider" / "create-fixture" / "fixtures" / "manifest.py"
+    )
+
+    assert "capability-assessment" in workflow
+    assert "./.github/actions/rpm/test-installed/setup" in scenario
+    assert "./.github/actions/provider/start" in scenario
+    assert "./.github/actions/agent/assert-availability" in scenario
+    assert "./.github/actions/agent/assert-capability-assessment" in scenario
+    assert "/usr/bin/python3" in assertion_action
+    assert "ProviderSessionManager" in assertion
+    assert "assess_capabilities" in assertion
+    assert "cached_capability_assessment" in assertion
+    assert "_UnavailableOnceRequester" in assertion
+    assert "retry did not preserve the request" in assertion
+    assert "ProviderAvailabilityState.NOT_SERVING" in assertion
+    assert (
+        "Changed runtime environment did not refresh A3 evidence" in assertion
+    )
+    assert (
+        "Availability transition did not invalidate A3 evidence" in assertion
+    )
+    assert "target_sha256" in assertion
+    assert 'version("stateforge-protocol")' in assertion
+    assert 'version("stateforge-provider")' in assertion
+    assert 'event.startswith("operation:")' in assertion
+    assert "capability-events.txt" in assertion_action
+    assert "target-sha256.txt" in assertion_action
+    assert "@requirement_check" in fixture
+    assert "@operation" in fixture
+    assert 'implements=("stateforge.backup.v1.prepare",)' in fixture
+    assert "RequirementCheckResult.unsatisfied" in fixture
+    assert "RequirementCheckResult.incompatible" in fixture
+    assert "RequirementCheckResult.unknown" in fixture
