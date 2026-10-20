@@ -15,6 +15,11 @@ from stateforge_protocol.sfp.capability_assessment.v1 import (
     capability_assessment_pb2,
 )
 
+from stateforge_agent._configuration_validation import (
+    require_bounded_integer,
+    require_finite_non_negative,
+    require_finite_positive,
+)
 from stateforge_agent._sfp._services.capability_assessment.cache import (
     CapabilityAssessmentCache,
 )
@@ -65,9 +70,24 @@ class CapabilityAssessmentCoordinator:
         client: CapabilityAssessmentRequester | None = None,
     ) -> None:
         """Configure one bounded Capability Assessment procedure client."""
-        _validate_configuration(
-            attempts=attempts,
-            retry_initial_delay_seconds=retry_initial_delay_seconds,
+        timeout_seconds = require_finite_positive(
+            timeout_seconds,
+            name="Capability Assessment timeout",
+        )
+        attempts = require_bounded_integer(
+            attempts,
+            name="Capability Assessment attempts",
+            minimum=1,
+            maximum=_MAX_ATTEMPTS,
+        )
+        retry_initial_delay_seconds = require_finite_non_negative(
+            retry_initial_delay_seconds,
+            name="Capability Assessment retry delay",
+        )
+        cache_entries = require_bounded_integer(
+            cache_entries,
+            name="Capability Assessment cache entries",
+            minimum=1,
         )
         self._client = (
             client
@@ -221,21 +241,4 @@ def _validate_declarations(
     ):
         raise SfpCapabilityAssessmentRequestError(
             "Capability Assessment operation is not declared"
-        )
-
-
-def _validate_configuration(
-    *,
-    attempts: int,
-    retry_initial_delay_seconds: float,
-) -> None:
-    """Validate Agent-local bounded assessment retry policy."""
-    if not 1 <= attempts <= _MAX_ATTEMPTS:
-        raise ValueError(
-            "Capability Assessment attempts must be between 1 and "
-            f"{_MAX_ATTEMPTS}"
-        )
-    if retry_initial_delay_seconds < 0:
-        raise ValueError(
-            "Capability Assessment retry delay must not be negative"
         )

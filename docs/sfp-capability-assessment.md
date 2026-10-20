@@ -46,12 +46,13 @@ Before sending a request, the Agent validates it with the public
 checks. Responses must pass the canonical exchange validator before the Agent
 normalizes them.
 
-Each RPC has a finite deadline. Only `UNAVAILABLE` is retried, with bounded
-attempts and delay. A retry retains the same assessment request ID and
-revalidates the active session, manifest, availability generation, and
-declared operations before it sends again. Other gRPC failures become
-separate sanitized Agent errors; Provider diagnostic text is not copied into
-logs or public exceptions.
+Each RPC has a finite deadline. Constructor configuration rejects boolean,
+non-finite, and out-of-range deadline or retry values. Only `UNAVAILABLE` is
+retried, with bounded attempts and delay. A retry retains the same assessment
+request ID and revalidates the active session, manifest, availability
+generation, and declared operations before it sends again. Other gRPC
+failures become separate sanitized Agent errors; Provider diagnostic text is
+not copied into logs or public exceptions.
 
 ## Evidence reuse
 

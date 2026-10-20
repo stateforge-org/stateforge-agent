@@ -16,6 +16,9 @@ from stateforge_protocol.sfp.capability_assessment.v1 import (
     validation,
 )
 
+from stateforge_agent._configuration_validation import (
+    require_finite_positive,
+)
 from stateforge_agent._sfp._services.capability_assessment.models import (
     CapabilityAssessment,
     CapabilityAssessmentScope,
@@ -118,9 +121,10 @@ class CapabilityAssessmentClient:
 
     def __init__(self, *, timeout_seconds: float = 5.0) -> None:
         """Configure the required finite per-call deadline."""
-        if timeout_seconds <= 0:
-            raise ValueError("Capability Assessment timeout must be positive")
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = require_finite_positive(
+            timeout_seconds,
+            name="Capability Assessment timeout",
+        )
 
     async def assess(
         self,

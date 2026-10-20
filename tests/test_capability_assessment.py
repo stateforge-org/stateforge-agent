@@ -49,6 +49,9 @@ from stateforge_agent._sfp._services.capability_assessment.client import (
     CapabilityAssessmentClient,
     _decode_response,
 )
+from stateforge_agent._sfp._services.capability_assessment.coordinator import (
+    CapabilityAssessmentCoordinator,
+)
 from stateforge_agent._sfp._services.capability_assessment.models import (
     CapabilityAssessmentScope,
 )
@@ -398,6 +401,17 @@ async def test_client_enforces_a_finite_deadline() -> None:
         await server.stop(grace=None)
 
 
+@pytest.mark.parametrize(
+    "timeout_seconds",
+    [True, False, 0, -1, float("nan"), float("inf"), float("-inf")],
+)
+def test_client_rejects_invalid_deadline_configuration(
+    timeout_seconds: object,
+) -> None:
+    with pytest.raises(ValueError, match="Capability Assessment timeout"):
+        CapabilityAssessmentClient(timeout_seconds=timeout_seconds)
+
+
 def test_response_decoder_enforces_the_protocol_byte_limit() -> None:
     decoded = _decode_response(bytes(contract.MAX_RESPONSE_BYTES + 1))
 
@@ -455,6 +469,38 @@ class _ScriptedRequester:
             assessed_at=datetime.now(UTC),
             findings=(),
             wire_size_bytes=1,
+        )
+
+
+@pytest.mark.parametrize(
+    "attempts",
+    [True, False, 0, 6, 1.5],
+)
+def test_coordinator_rejects_invalid_attempt_configuration(
+    attempts: object,
+) -> None:
+    with pytest.raises(ValueError, match="Capability Assessment attempts"):
+        CapabilityAssessmentCoordinator(attempts=attempts)
+
+
+@pytest.mark.parametrize(
+    "retry_delay",
+    [True, False, -1, float("nan"), float("inf"), float("-inf")],
+)
+def test_coordinator_rejects_invalid_retry_delay_configuration(
+    retry_delay: object,
+) -> None:
+    with pytest.raises(ValueError, match="Capability Assessment retry delay"):
+        CapabilityAssessmentCoordinator(
+            retry_initial_delay_seconds=retry_delay
+        )
+
+
+def test_coordinator_validates_timeout_with_an_injected_client() -> None:
+    with pytest.raises(ValueError, match="Capability Assessment timeout"):
+        CapabilityAssessmentCoordinator(
+            timeout_seconds=float("nan"),
+            client=_ScriptedRequester(),
         )
 
 
