@@ -92,6 +92,11 @@ jobs:
       matrix:
         scenario:
           - manifest-exchange
+          - capability-assessment
+          - capability-timeout
+          - capability-malformed
+          - capability-mismatch
+          - capability-limits
           - provider-availability
           - multiple-providers
           - invalid-descriptor
@@ -118,6 +123,21 @@ jobs:
         if: ${{ matrix.scenario == 'manifest-exchange' }}
         uses: ./.github/actions/rpm/test-installed/smoke/manifest-exchange
         with:
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          fixture-directory: dist/provider-fixture
+
+      - name: Run Capability Assessment scenario
+        if: ${{ matrix.scenario == 'capability-assessment' }}
+        uses: ./.github/actions/rpm/test-installed/capability/assessment
+        with:
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          fixture-directory: dist/provider-fixture
+
+      - name: Run Capability Assessment boundary scenario
+        if: ${{ startsWith(matrix.scenario, 'capability-') && matrix.scenario != 'capability-assessment' }}
+        uses: ./.github/actions/rpm/test-installed/capability/boundary
+        with:
+          scenario: ${{ matrix.scenario }}
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
           fixture-directory: dist/provider-fixture
 

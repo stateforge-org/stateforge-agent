@@ -1,0 +1,35 @@
+name: Assert installed Capability Assessment boundary
+description: Exercise one adversarial boundary through the RPM-installed Agent.
+
+inputs:
+  container-name:
+    description: Fedora container containing the installed Agent.
+    required: true
+  scenario:
+    description: Boundary scenario selected by the installed-test matrix.
+    required: true
+  evidence-directory:
+    description: Host directory receiving normalized boundary evidence.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Exercise installed Capability Assessment boundary
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+        SCENARIO: ${{ inputs.scenario }}
+      run: |
+        set -euo pipefail
+        mkdir -p "${EVIDENCE_DIRECTORY}"
+        verifier_directory="/opt/stateforge-agent-tests/capability-boundary"
+        verifier="${verifier_directory}/assert.py"
+        docker exec "${CONTAINER_NAME}" mkdir -p "${verifier_directory}"
+        docker cp "${ACTION_PATH}/assert.py" \
+          "${CONTAINER_NAME}:${verifier}"
+        docker exec "${CONTAINER_NAME}" /usr/bin/python3 "${verifier}" \
+          --scenario "${SCENARIO}" \
+          > "${EVIDENCE_DIRECTORY}/boundary.json"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -25,6 +25,18 @@ from stateforge_agent._sfp._runtime.errors import (
     SfpManifestError,
 )
 from stateforge_agent._sfp._services.bootstrap.client import perform_handshake
+from stateforge_agent._sfp._services.capability_assessment.client import (
+    CapabilityAssessmentRequester,
+    SfpCapabilityAssessmentStaleError,
+    SfpCapabilityAssessmentUnavailableError,
+)
+from stateforge_agent._sfp._services.capability_assessment.coordinator import (
+    CapabilityAssessmentCoordinator,
+    CapabilityAssessmentLease,
+)
+from stateforge_agent._sfp._services.capability_assessment.models import (
+    CapabilityAssessment,
+)
 from stateforge_agent._sfp._services.health.client import (
     HealthClient,
     HealthWatcher,
@@ -46,7 +58,6 @@ _FAILED_CHANNEL_STATES = {
     grpc.ChannelConnectivity.SHUTDOWN,
 }
 _JITTER_STEPS = 1_000_000
-
 ProviderDescriptorLoader = Callable[[UUID], ProviderEndpointDescriptor]
 
 
@@ -130,6 +141,7 @@ class _ProviderRuntimeState:
     channel_watcher: asyncio.Task[None] | None = None
     health_watcher: asyncio.Task[None] | None = None
     retry_task: asyncio.Task[None] | None = None
+    availability_generation: int = 0
 
 
 class ProviderSessionManager:
@@ -148,9 +160,16 @@ class ProviderSessionManager:
         reconnect_initial_delay_seconds: float = 1.0,
         reconnect_max_delay_seconds: float = 30.0,
         health_retry_max_delay_seconds: float = 15.0,
+        capability_assessment_timeout_seconds: float = 5.0,
+        capability_assessment_attempts: int = 2,
+        capability_assessment_retry_initial_delay_seconds: float = 0.25,
+        capability_assessment_cache_entries: int = 128,
         descriptor_loader: ProviderDescriptorLoader | None = None,
         manifest_client: ManifestRetriever | None = None,
         health_client: HealthWatcher | None = None,
+        capability_assessment_client: (
+            CapabilityAssessmentRequester | None
+        ) = None,
     ) -> None:
         """Create an empty Provider session registry."""
         if not isinstance(agent_runtime_id, UUID):
@@ -186,7 +205,6 @@ class ProviderSessionManager:
             )
         if health_retry_max_delay_seconds <= 0:
             raise ValueError("health_retry_max_delay_seconds must be positive")
-
         self._agent_runtime_id = agent_runtime_id
         self._agent_software_version = agent_software_version
         self._supported_sfp_versions = supported_sfp_versions
@@ -206,6 +224,15 @@ class ProviderSessionManager:
         self._descriptor_loader = descriptor_loader
         self._health_client = (
             health_client if health_client is not None else HealthClient()
+        )
+        self._capability_assessment = CapabilityAssessmentCoordinator(
+            timeout_seconds=capability_assessment_timeout_seconds,
+            attempts=capability_assessment_attempts,
+            retry_initial_delay_seconds=(
+                capability_assessment_retry_initial_delay_seconds
+            ),
+            cache_entries=capability_assessment_cache_entries,
+            client=capability_assessment_client,
         )
         self._providers: dict[UUID, _ProviderRuntimeState] = {}
         self._closed = False
@@ -236,6 +263,88 @@ class ProviderSessionManager:
         """Return whether one Provider currently accepts new operations."""
         status = self.availability_status(provider_instance_id)
         return status is not None and status.eligible
+
+    async def assess_capabilities(
+        self,
+        provider_instance_id: UUID,
+        operation_identifiers: tuple[str, ...],
+        *,
+        execution_context: Mapping[str, object] | None = None,
+    ) -> CapabilityAssessment:
+        """Read current Provider evidence without authorizing execution."""
+        lease = await self._capability_assessment_lease(provider_instance_id)
+        return await self._capability_assessment.assess(
+            lease,
+            operation_identifiers=operation_identifiers,
+            execution_context=execution_context,
+            assert_current=self._assert_capability_assessment_is_current,
+        )
+
+    async def cached_capability_assessment(
+        self,
+        provider_instance_id: UUID,
+        operation_identifiers: tuple[str, ...],
+        *,
+        execution_context: Mapping[str, object] | None = None,
+    ) -> CapabilityAssessment | None:
+        """Return exact-scope prior evidence, never an eligibility decision."""
+        lease = await self._capability_assessment_lease(provider_instance_id)
+        return await self._capability_assessment.cached(
+            lease,
+            operation_identifiers=operation_identifiers,
+            execution_context=execution_context,
+            assert_current=self._assert_capability_assessment_is_current,
+        )
+
+    async def _capability_assessment_lease(
+        self,
+        provider_instance_id: UUID,
+    ) -> CapabilityAssessmentLease:
+        """Snapshot one active session and its availability fence."""
+        async with self._lock:
+            provider = self._providers.get(provider_instance_id)
+            if provider is None or provider.active_session is None:
+                raise SfpCapabilityAssessmentUnavailableError(
+                    "Provider has no active SFP session"
+                )
+            session = provider.active_session
+            return CapabilityAssessmentLease(
+                provider_instance_id=session.provider_instance_id,
+                endpoint_generation=session.endpoint_generation,
+                session_id=session.session_id,
+                manifest_revision=session.manifest.key.revision,
+                availability_generation=provider.availability_generation,
+                operation_identifiers=(session.manifest.operation_identifiers),
+                channel=session._channel,
+                session_token=session,
+            )
+
+    async def _assert_capability_assessment_is_current(
+        self,
+        lease: CapabilityAssessmentLease,
+    ) -> None:
+        """Fence one procedure lease to current session and availability."""
+        async with self._lock:
+            provider = self._providers.get(lease.provider_instance_id)
+            if (
+                provider is None
+                or provider.active_session is not lease.session_token
+            ):
+                raise SfpCapabilityAssessmentStaleError(
+                    "Capability Assessment session is no longer current"
+                )
+            if (
+                provider.availability_generation
+                != lease.availability_generation
+            ):
+                raise SfpCapabilityAssessmentStaleError(
+                    "Provider availability changed during assessment"
+                )
+            status = provider.availability_status
+            if status is None or not status.eligible:
+                raise SfpCapabilityAssessmentUnavailableError(
+                    "Provider is not currently available for assessment"
+                )
 
     async def establish(
         self,
@@ -595,6 +704,7 @@ class ProviderSessionManager:
             await asyncio.gather(*health_watchers, return_exceptions=True)
         for session in sessions:
             await session._channel.close()
+        self._capability_assessment.clear()
 
     async def _schedule_retry(self, provider_instance_id: UUID) -> None:
         """Ensure exactly one bounded retry loop exists for a Provider."""
@@ -936,6 +1046,10 @@ class ProviderSessionManager:
         previous = provider.availability_status
         provider.availability_status = status
         if previous != status:
+            provider.availability_generation += 1
+            self._capability_assessment.discard_provider(
+                status.provider_instance_id
+            )
             _LOGGER.info(
                 "Provider availability changed: "
                 "provider_instance_id=%s endpoint_generation=%s "

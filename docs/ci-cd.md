@@ -18,6 +18,8 @@ operation.
 │   │       ├── cleanup/
 │   │       ├── smoke/
 │   │       │   └── manifest-exchange/
+│   │       ├── capability/
+│   │       │   └── assessment/
 │   │       ├── lifecycle/
 │   │       │   └── multiple-providers/
 │   │       ├── health/
@@ -28,6 +30,7 @@ operation.
 │   │           └── uninstall-reinstall/
 │   ├── agent/
 │   │   ├── assert-availability/
+│   │   ├── assert-capability-assessment/
 │   │   ├── install/
 │   │   ├── start/
 │   │   └── collect-evidence/
@@ -61,9 +64,11 @@ downloads those exact bytes, then performs this sequence:
 3. Record their commits and package hashes in one immutable fixture bundle.
 4. Start a clean Fedora systemd container with no source checkout mounted.
 5. Verify and install the Agent RPM.
-6. Install the matching Protocol wheel and third-party runtime dependencies.
+6. Install the matching Protocol and Provider wheels and third-party runtime
+   dependencies.
 7. Start the packaged `stateforge-agent.service` unit.
-8. Start a dummy Provider as a separate non-root systemd service.
+8. Start a real Provider Python fixture as a separate non-root systemd
+   service.
 9. Wait for the Agent to accept that Provider's manifest and Provider-wide
    Health Watch state.
 10. Prove the CLI, imported Python distribution, and RPM versions agree and
@@ -111,9 +116,18 @@ Contents permission. The token is scoped to those two repositories, is not
 persisted by checkout, and expires automatically. A long-lived personal
 access token is neither required nor accepted by the workflow interface.
 
-The installed-system workflow currently runs five isolated scenarios:
+The installed-system workflow currently runs ten isolated scenarios:
 
 - smoke: one public-API Provider completes manifest exchange;
+- capability: the RPM-installed Agent retries one deterministic transient
+  failure before assessing a real Provider Python process over its Unix-domain
+  SFP socket; it refreshes evidence after an operation-specific environment
+  change, remains available while appropriate, fails closed across a
+  Provider-wide Health transition, invalidates stale evidence, and proves that
+  the target is unchanged and no operation runs;
+- capability boundary cases: isolated clean-container jobs prove the installed
+  client deadline, malformed-wire rejection, session/generation/manifest
+  correlation, and request/response byte limits;
 - lifecycle: two independent Provider processes are accepted concurrently;
 - health: real Providers drive initial replay, loss, recovery, concurrent
   Watch streams, shutdown, and same-installation generation replacement;
@@ -139,6 +153,8 @@ digest of each generated wheel.
 | `agent/install` | Create clean Fedora, install the exact RPM and dependencies, and verify package ownership. |
 | `agent/start` | Start the packaged systemd unit and wait for an explicit readiness event. |
 | `agent/assert-availability` | Assert an exact Provider generation reached a local eligibility state. |
+| `agent/assert-capability-assessment` | Use the RPM-installed Agent package to collect and verify normalized evidence from a separate real Provider process. |
+| `agent/assert-capability-boundary` | Exercise timeout, malformed response, stale response-fence, and byte-limit behavior through the RPM-installed client. |
 | `agent/collect-evidence` | Capture bounded evidence, uninstall the RPM, and clean up. |
 | `provider/create-fixture` | Invoke the selected Protocol and Provider checkouts' canonical package-build actions and stage their wheels with a selected fixture. |
 | `provider/start` | Run the fixture as a separate non-root systemd service. |
@@ -175,8 +191,9 @@ assertions that distinguish that case. The reusable workflow gives every
 scenario its own job and clean container, so one failure cannot contaminate a
 later scenario.
 
-Use one of the `smoke`, `lifecycle`, `health`, `adversarial`, or `destructive`
-tiers. A scenario action must always invoke cleanup with `always()` so failure
+Use one of the `smoke`, `capability`, `lifecycle`, `health`, `adversarial`, or
+`destructive` tiers. A scenario action must always invoke cleanup with
+`always()` so failure
 evidence is retained. Adding a normal scenario requires one action and one thin
 workflow job; it must not duplicate RPM installation, systemd readiness,
 evidence, or environment cleanup commands.

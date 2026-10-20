@@ -1,6 +1,7 @@
 """Contract tests for reusable RPM and installed-system automation."""
 
 from pathlib import Path
+from runpy import run_path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -15,6 +16,27 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def test_capability_assertion_treats_a_missing_event_log_as_no_calls(
+    tmp_path: Path,
+) -> None:
+    """Permit local rejections before the Provider records its first RPC."""
+    assertion = run_path(
+        str(ACTIONS / "agent" / "assert-capability-assessment" / "assert.py")
+    )
+    attempt_digests = assertion["_capability_attempt_digests"]
+    event_log = tmp_path / "events.log"
+
+    assert attempt_digests(event_log) == ()
+
+    event_log.write_text(
+        "provider-started\n"
+        "rpc:capability-assessment:first\n"
+        "rpc:capability-assessment:second\n",
+        encoding="utf-8",
+    )
+    assert attempt_digests(event_log) == ("first", "second")
+
+
 def test_rpm_build_has_one_authoritative_command() -> None:
     """Keep RPM construction in one locally runnable script."""
     build_action = read(ACTIONS / "rpm" / "build" / "action.yml")
@@ -26,6 +48,23 @@ def test_rpm_build_has_one_authoritative_command() -> None:
     assert "rpmbuild" in builder
     assert "rpmbuild" not in build_action
     assert "rpmbuild" not in build_workflow
+
+
+def test_ci_runs_complete_source_validation() -> None:
+    """Keep source correctness gates required beside installed RPM tests."""
+    pipeline = read(WORKFLOWS / "rpm-build-and-test.yml")
+    validation = read(WORKFLOWS / "source-validation.yml")
+
+    assert "uses: ./.github/workflows/source-validation.yml" in pipeline
+    assert "python -m ruff format --check ." in validation
+    assert "python -m ruff check ." in validation
+    assert "python -m mypy src" in validation
+    assert "python -m pytest" in validation
+    assert "python -m mkdocs build --strict" in validation
+    assert (
+        ".stateforge-ci/sources/protocol/.github/actions/python/build"
+        in validation
+    )
 
 
 def test_rpm_builder_is_location_independent() -> None:
@@ -275,6 +314,8 @@ def test_action_library_has_expected_domain_boundaries() -> None:
     """Keep reusable behavior organized by domain rather than filename tags."""
     expected = {
         "agent/assert-availability",
+        "agent/assert-capability-boundary",
+        "agent/assert-capability-assessment",
         "agent/collect-evidence",
         "agent/install",
         "agent/start",
@@ -285,6 +326,8 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "provider/stop",
         "rpm/build",
         "rpm/test-installed/adversarial/invalid-descriptor",
+        "rpm/test-installed/capability/assessment",
+        "rpm/test-installed/capability/boundary",
         "rpm/test-installed/cleanup",
         "rpm/test-installed/destructive/uninstall-reinstall",
         "rpm/test-installed/health/provider-availability",
@@ -335,6 +378,7 @@ def test_each_installed_scenario_is_an_independent_action() -> None:
         "lifecycle",
         "health",
         "adversarial",
+        "capability",
         "destructive",
     }
     for scenario in scenarios:
@@ -373,3 +417,84 @@ def test_installed_health_scenario_uses_real_artifacts_and_processes() -> None:
     assert "refresh_health" in fixture
     assert "Provider availability changed:" in assertion
     assert "endpoint_generation=${ENDPOINT_GENERATION}" in assertion
+
+
+def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (
+    None
+):
+    """Keep A3 evidence on exact packages and independent SFP processes."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario = read(
+        ACTIONS
+        / "rpm"
+        / "test-installed"
+        / "capability"
+        / "assessment"
+        / "action.yml"
+    )
+    assertion_action = read(
+        ACTIONS / "agent" / "assert-capability-assessment" / "action.yml"
+    )
+    assertion = read(
+        ACTIONS / "agent" / "assert-capability-assessment" / "assert.py"
+    )
+    fixture = read(
+        ACTIONS / "provider" / "create-fixture" / "fixtures" / "manifest.py"
+    )
+
+    assert "capability-assessment" in workflow
+    for boundary in (
+        "capability-timeout",
+        "capability-malformed",
+        "capability-mismatch",
+        "capability-limits",
+    ):
+        assert boundary in workflow
+    assert "./.github/actions/rpm/test-installed/setup" in scenario
+    assert "./.github/actions/provider/start" in scenario
+    assert "./.github/actions/agent/assert-availability" in scenario
+    assert "./.github/actions/agent/assert-capability-assessment" in scenario
+    assert "/usr/bin/python3" in assertion_action
+    assert "ProviderSessionManager" in assertion
+    assert "assess_capabilities" in assertion
+    assert "cached_capability_assessment" in assertion
+    assert "_UnavailableOnceRequester" not in assertion
+    assert "capability-unavailable-once" in scenario
+    assert "CapabilityAssessmentService.AssessCapabilities" in fixture
+    assert "grpc.StatusCode.UNAVAILABLE" in fixture
+    assert "retry did not preserve the request" in assertion
+    assert "ProviderAvailabilityState.NOT_SERVING" in assertion
+    assert (
+        "Changed runtime environment did not refresh A3 evidence" in assertion
+    )
+    assert (
+        "Availability transition did not invalidate A3 evidence" in assertion
+    )
+    assert "target_sha256" in assertion
+    assert 'version("stateforge-protocol")' in assertion
+    assert 'version("stateforge-provider")' in assertion
+    assert 'event.startswith("operation:")' in assertion
+    assert "capability-events.txt" in assertion_action
+    assert "target-sha256.txt" in assertion_action
+    assert "@requirement_check" in fixture
+    assert "@operation" in fixture
+    assert 'implements=("stateforge.backup.v1.prepare",)' in fixture
+    assert "RequirementCheckResult.unsatisfied" in fixture
+    assert "RequirementCheckResult.incompatible" in fixture
+    assert "RequirementCheckResult.unknown" in fixture
+
+    boundary_action = read(
+        ACTIONS / "agent" / "assert-capability-boundary" / "action.yml"
+    )
+    boundary_assertion = read(
+        ACTIONS / "agent" / "assert-capability-boundary" / "assert.py"
+    )
+    assert "/usr/bin/python3" in boundary_action
+    assert "SfpCapabilityAssessmentDeadlineError" in boundary_assertion
+    assert (
+        "SfpCapabilityAssessmentMalformedResponseError" in boundary_assertion
+    )
+    assert "SfpCapabilityAssessmentLimitError" in boundary_assertion
+    assert "session_id" in boundary_assertion
+    assert "endpoint_generation" in boundary_assertion
+    assert "manifest_revision" in boundary_assertion

@@ -4,11 +4,47 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 import signal
 from pathlib import Path
 
-from stateforge_provider import HealthStatus, Platform, Provider
+import grpc
+from stateforge_protocol.sfp.capability_assessment.v1 import (
+    capability_assessment_pb2,
+)
+from stateforge_provider import (
+    HealthStatus,
+    Platform,
+    Provider,
+    ProviderModel,
+    RequirementCheckResult,
+    operation,
+    requirement_check,
+)
+from stateforge_provider._services.capability_assessment.service import (
+    CapabilityAssessmentService,
+)
+
+_CAPABILITY_ATTEMPT_PREFIX = "rpc:capability-assessment:"
+
+
+def _record_event(path: Path, event: str) -> None:
+    """Append one deterministic fixture event."""
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(f"{event}\n")
+
+
+class FixtureInput(ProviderModel):
+    """Describe operation input without invoking it during assessment."""
+
+    value: str
+
+
+class FixtureResult(ProviderModel):
+    """Describe operation output without invoking it during assessment."""
+
+    value: str
 
 
 class ManifestFixtureProvider(Provider):
@@ -36,6 +72,8 @@ class ManifestFixtureProvider(Provider):
         self._health_status = HealthStatus.healthy()
         self._fail_health = False
         self._health_tasks: set[asyncio.Task[None]] = set()
+        self._event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
+        self._target_path = Path(os.environ["STATEFORGE_TEST_TARGET_PATH"])
 
     async def on_startup(self) -> None:
         """Install deterministic health transitions for system tests."""
@@ -74,6 +112,77 @@ class ManifestFixtureProvider(Provider):
             raise RuntimeError("fixture health hook failed")
         return self._health_status
 
+    @requirement_check(
+        "runtime.target.readable",
+        "Fixture target is readable",
+    )
+    async def target_readable(self) -> RequirementCheckResult:
+        """Inspect the target without changing its contents or metadata."""
+        self._record("requirement:runtime.target.readable")
+        if os.access(self._target_path, os.R_OK):
+            return RequirementCheckResult.satisfied()
+        return RequirementCheckResult.unsatisfied()
+
+    @requirement_check("runtime.pending", "Pending fixture prerequisite")
+    async def pending(self) -> RequirementCheckResult:
+        """Expose one deterministic unmet prerequisite."""
+        self._record("requirement:runtime.pending")
+        return RequirementCheckResult.unsatisfied()
+
+    @requirement_check("runtime.incompatible", "Incompatible fixture runtime")
+    async def incompatible(self) -> RequirementCheckResult:
+        """Expose conclusive negative runtime evidence."""
+        self._record("requirement:runtime.incompatible")
+        return RequirementCheckResult.incompatible("Fixture incompatibility")
+
+    @requirement_check("runtime.unknown", "Unobservable fixture prerequisite")
+    async def unknown(self) -> RequirementCheckResult:
+        """Expose an unresolved prerequisite without guessing."""
+        self._record("requirement:runtime.unknown")
+        return RequirementCheckResult.unknown("Fixture evidence unavailable")
+
+    @operation(
+        "stateforge.test/inspect@1",
+        requires=("runtime.target.readable",),
+    )
+    async def inspect(self, request: FixtureInput) -> FixtureResult:
+        """Declare a generic supported operation that is never dispatched."""
+        self._record("operation:inspect")
+        return FixtureResult(value=request.value)
+
+    @operation(
+        "stateforge.test/snapshot@1",
+        implements=("stateforge.backup.v1.prepare",),
+        requires=("runtime.target.readable", "runtime.pending"),
+    )
+    async def snapshot(self, request: FixtureInput) -> FixtureResult:
+        """Declare a profile-related operation with an unmet prerequisite."""
+        self._record("operation:snapshot")
+        return FixtureResult(value=request.value)
+
+    @operation(
+        "stateforge.test/unsupported@1",
+        requires=("runtime.incompatible",),
+    )
+    async def unsupported(self, request: FixtureInput) -> FixtureResult:
+        """Declare one operation with conclusive negative evidence."""
+        self._record("operation:unsupported")
+        return FixtureResult(value=request.value)
+
+    @operation(
+        "stateforge.test/indeterminate@1",
+        requires=("runtime.unknown",),
+    )
+    async def indeterminate(self, request: FixtureInput) -> FixtureResult:
+        """Declare one operation whose current support is unresolved."""
+        self._record("operation:indeterminate")
+        return FixtureResult(value=request.value)
+
+    def _record(self, event: str) -> None:
+        """Record fixture-only evidence outside the inspected target."""
+        with self._event_log.open("a", encoding="utf-8") as stream:
+            stream.write(f"{event}\n")
+
     def _schedule_health(
         self,
         status: HealthStatus,
@@ -97,8 +206,41 @@ class ManifestFixtureProvider(Provider):
         await self.refresh_health()
 
 
+def _install_capability_unavailable_once() -> None:
+    """Fail the first real Provider RPC at its gRPC service boundary."""
+    if os.environ["STATEFORGE_TEST_CAPABILITY_UNAVAILABLE_ONCE"] != "true":
+        return
+    original = CapabilityAssessmentService.AssessCapabilities
+    unavailable = True
+    event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
+
+    async def assess_capabilities(
+        service: CapabilityAssessmentService,
+        request: capability_assessment_pb2.AssessCapabilitiesRequest,
+        context: grpc.aio.ServicerContext[
+            capability_assessment_pb2.AssessCapabilitiesRequest,
+            capability_assessment_pb2.AssessCapabilitiesResponse,
+        ],
+    ) -> capability_assessment_pb2.AssessCapabilitiesResponse:
+        nonlocal unavailable
+        digest = hashlib.sha256(
+            request.SerializeToString(deterministic=True)
+        ).hexdigest()
+        _record_event(event_log, f"{_CAPABILITY_ATTEMPT_PREFIX}{digest}")
+        if unavailable:
+            unavailable = False
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                "Injected fixture unavailability",
+            )
+        return await original(service, request, context)
+
+    CapabilityAssessmentService.AssessCapabilities = assess_capabilities
+
+
 def main() -> None:
     """Run the Provider fixture until its service manager stops it."""
+    _install_capability_unavailable_once()
     ManifestFixtureProvider(
         discovery_directory=Path(
             os.environ["STATEFORGE_TEST_DISCOVERY_DIRECTORY"]

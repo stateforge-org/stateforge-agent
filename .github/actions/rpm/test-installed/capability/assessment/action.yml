@@ -1,0 +1,62 @@
+name: Test installed Capability Assessment
+description: Verify the RPM Agent against the real Provider Python runtime.
+
+inputs:
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario's evidence.
+    required: false
+    default: dist/agent-system-test-evidence/capability-assessment
+  fixture-directory:
+    description: Directory containing the exact Provider fixture bundle.
+    required: false
+    default: dist/provider-fixture
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare installed Agent
+      id: setup
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+        fixture-directory: ${{ inputs.fixture-directory }}
+
+    - name: Start requirement-aware Provider
+      id: provider
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: provider-a
+        provider-identity: stateforge.test.capability
+        capability-unavailable-once: "true"
+
+    - name: Require Agent readiness
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider.outputs.endpoint-generation }}
+        state: available
+        evidence-directory: ${{ inputs.evidence-directory }}/availability
+
+    - name: Exercise Capability Assessment through the installed Agent
+      uses: ./.github/actions/agent/assert-capability-assessment
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        unit-name: ${{ steps.provider.outputs.unit-name }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Preserve evidence and clean up
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        evidence-directory: ${{ inputs.evidence-directory }}

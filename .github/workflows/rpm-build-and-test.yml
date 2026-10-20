@@ -45,6 +45,11 @@ permissions:
   contents: read
 
 jobs:
+  source:
+    uses: ./.github/workflows/source-validation.yml
+    with:
+      protocol-ref: ${{ inputs.protocol-ref }}
+
   build:
     uses: ./.github/workflows/rpm-build.yml
     with:
