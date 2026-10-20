@@ -28,6 +28,23 @@ def test_rpm_build_has_one_authoritative_command() -> None:
     assert "rpmbuild" not in build_workflow
 
 
+def test_ci_runs_complete_source_validation() -> None:
+    """Keep source correctness gates required beside installed RPM tests."""
+    pipeline = read(WORKFLOWS / "rpm-build-and-test.yml")
+    validation = read(WORKFLOWS / "source-validation.yml")
+
+    assert "uses: ./.github/workflows/source-validation.yml" in pipeline
+    assert "python -m ruff format --check ." in validation
+    assert "python -m ruff check ." in validation
+    assert "python -m mypy src" in validation
+    assert "python -m pytest" in validation
+    assert "python -m mkdocs build --strict" in validation
+    assert (
+        ".stateforge-ci/sources/protocol/.github/actions/python/build"
+        in validation
+    )
+
+
 def test_rpm_builder_is_location_independent() -> None:
     """Build the Agent checkout that owns the invoked action."""
     action = read(ACTIONS / "rpm" / "build" / "action.yml")

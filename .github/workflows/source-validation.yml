@@ -1,0 +1,68 @@
+name: Source validation
+
+on:
+  workflow_call:
+    inputs:
+      protocol-ref:
+        description: Protocol revision used to validate Agent source.
+        required: false
+        type: string
+        default: mvp/implementation
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Ruff, mypy, pytest, and docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out Agent source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out Protocol source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: stateforge-org/stateforge-protocol
+          ref: ${{ inputs.protocol-ref }}
+          path: .stateforge-ci/sources/protocol
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install package builder
+        run: python -m pip install --disable-pip-version-check "build>=1.2,<2"
+
+      - name: Build the selected Protocol package
+        id: protocol
+        uses: ./.stateforge-ci/sources/protocol/.github/actions/python/build
+        with:
+          output-directory: dist/protocol
+          evidence-directory: evidence/protocol
+
+      - name: Install source validation dependencies
+        env:
+          PROTOCOL_WHEEL: ${{ steps.protocol.outputs.wheel-path }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check "${PROTOCOL_WHEEL}"
+          python -m pip install --disable-pip-version-check \
+            --group dev \
+            --group docs \
+            .
+
+      - name: Validate Agent source
+        run: |
+          set -euo pipefail
+          python -m ruff format --check .
+          python -m ruff check .
+          python -m mypy src
+          python -m pytest
+          python -m mkdocs build --strict
