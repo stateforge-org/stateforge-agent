@@ -39,6 +39,8 @@ runs:
       with:
         container-name: ${{ steps.initial.outputs.container-name }}
         provider-instance-id: ${{ steps.initial-provider.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.initial-provider.outputs.endpoint-generation }}
+        journal-cursor: ${{ steps.initial-provider.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/initial
 
     - name: Uninstall RPM and remove initial environment
@@ -68,6 +70,8 @@ runs:
       with:
         container-name: ${{ steps.reinstalled.outputs.container-name }}
         provider-instance-id: ${{ steps.reinstalled-provider.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.reinstalled-provider.outputs.endpoint-generation }}
+        journal-cursor: ${{ steps.reinstalled-provider.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/reinstalled
 
     - name: Preserve final evidence and clean up

@@ -41,6 +41,8 @@ runs:
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
         provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
+        journal-cursor: ${{ steps.provider-a.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-a
 
     - name: Require first Provider initial Health replay
@@ -50,6 +52,7 @@ runs:
         provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
         state: available
+        journal-cursor: ${{ steps.provider-a.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-a
 
     - name: Start second Provider
@@ -69,9 +72,11 @@ runs:
         provider-instance-id: ${{ steps.provider-b.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider-b.outputs.endpoint-generation }}
         state: available
+        journal-cursor: ${{ steps.provider-b.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-b
 
     - name: Publish first Provider NOT_SERVING
+      id: not-serving
       uses: ./.github/actions/provider/set-health
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
@@ -85,9 +90,11 @@ runs:
         provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
         state: not_serving
+        journal-cursor: ${{ steps.not-serving.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-a
 
     - name: Recover first Provider
+      id: recover
       uses: ./.github/actions/provider/set-health
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
@@ -101,10 +108,11 @@ runs:
         provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
         state: available
-        minimum-occurrences: "2"
+        journal-cursor: ${{ steps.recover.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-a
 
     - name: Fail the first Provider health hook
+      id: hook-failure
       uses: ./.github/actions/provider/set-health
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
@@ -118,10 +126,11 @@ runs:
         provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
         state: not_serving
-        minimum-occurrences: "2"
+        journal-cursor: ${{ steps.hook-failure.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-a
 
     - name: Recover the failed health hook
+      id: hook-recovery
       uses: ./.github/actions/provider/set-health
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
@@ -135,10 +144,11 @@ runs:
         provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
         state: available
-        minimum-occurrences: "3"
+        journal-cursor: ${{ steps.hook-recovery.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-a
 
     - name: Stop first Provider cleanly
+      id: stop-provider-a
       uses: ./.github/actions/provider/stop
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
@@ -151,6 +161,7 @@ runs:
         provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
         state: unavailable
+        journal-cursor: ${{ steps.stop-provider-a.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-a
 
     - name: Start replacement generation
@@ -184,9 +195,11 @@ runs:
         provider-instance-id: ${{ steps.provider-a-next.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider-a-next.outputs.endpoint-generation }}
         state: available
+        journal-cursor: ${{ steps.provider-a-next.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-a-next
 
     - name: Stop concurrent second Provider
+      id: stop-provider-b
       uses: ./.github/actions/provider/stop
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
@@ -199,6 +212,7 @@ runs:
         provider-instance-id: ${{ steps.provider-b.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider-b.outputs.endpoint-generation }}
         state: unavailable
+        journal-cursor: ${{ steps.stop-provider-b.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-b
 
     - name: Preserve evidence and clean up

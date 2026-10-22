@@ -9,6 +9,12 @@ inputs:
   provider-instance-id:
     description: Provider installation identity returned by the start action.
     required: true
+  endpoint-generation:
+    description: Exact Provider endpoint generation being asserted.
+    required: true
+  journal-cursor:
+    description: Agent journal boundary captured before Provider startup.
+    required: true
   evidence-directory:
     description: Host directory receiving the manifest assertion record.
     required: false
@@ -24,34 +30,66 @@ runs:
     - name: Assert accepted manifest session
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
         CONTAINER_NAME: ${{ inputs.container-name }}
+        ENDPOINT_GENERATION: ${{ inputs.endpoint-generation }}
         EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+        JOURNAL_CURSOR: ${{ inputs.journal-cursor }}
         PROVIDER_INSTANCE_ID: ${{ inputs.provider-instance-id }}
         TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
       run: |
+        set -euo pipefail
+        if [[ ! "${ENDPOINT_GENERATION}" =~ ^[1-9][0-9]*$ \
+          || ! "${TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ \
+          || -z "${JOURNAL_CURSOR}" ]]; then
+          printf 'Manifest assertion inputs are invalid.\n' >&2
+          exit 2
+        fi
         mkdir -p "${EVIDENCE_DIRECTORY}"
         deadline=$((SECONDS + TIMEOUT_SECONDS))
+        journal=""
         while (( SECONDS < deadline )); do
-          journal="$(docker exec "${CONTAINER_NAME}" \
-            journalctl -u stateforge-agent.service --no-pager -o cat)"
-          if grep -F 'Rejecting Provider manifest:' <<< "${journal}" \
-            | grep -Fq "provider_instance_id=${PROVIDER_INSTANCE_ID}"; then
-            printf 'Agent rejected Provider manifest %s.\n' \
-              "${PROVIDER_INSTANCE_ID}" >&2
+          if ! journal="$(docker exec "${CONTAINER_NAME}" \
+            journalctl -u stateforge-agent.service --no-pager -o cat \
+              "--after-cursor=${JOURNAL_CURSOR}")"; then
+            printf 'Could not read the generation-scoped Agent journal.\n' >&2
             exit 1
           fi
-          if grep -F 'SFP session established:' <<< "${journal}" \
-            | grep -Fq "provider_instance_id=${PROVIDER_INSTANCE_ID}"; then
-            printf '%s\n' \
-              "Manifest accepted for ${PROVIDER_INSTANCE_ID}." \
-              > "${EVIDENCE_DIRECTORY}/manifest-assertion.txt"
-            exit 0
-          fi
+
+          set +e
+          match="$(printf '%s\n' "${journal}" \
+            | /bin/bash "${ACTION_PATH}/check-journal.sh" \
+              "${PROVIDER_INSTANCE_ID}" "${ENDPOINT_GENERATION}")"
+          match_status=$?
+          set -e
+          case "${match_status}" in
+            0)
+              printf '%s\n' "${match}" \
+                > "${EVIDENCE_DIRECTORY}/manifest-assertion.txt"
+              exit 0
+              ;;
+            1)
+              printf '%s\n' "${match}" \
+                > "${EVIDENCE_DIRECTORY}/manifest-rejection.txt"
+              printf 'Agent rejected Provider manifest %s generation %s.\n' \
+                "${PROVIDER_INSTANCE_ID}" "${ENDPOINT_GENERATION}" >&2
+              exit 1
+              ;;
+            3)
+              ;;
+            *)
+              printf 'Manifest journal classifier failed with status %s.\n' \
+                "${match_status}" >&2
+              exit 1
+              ;;
+          esac
           sleep 1
         done
 
+        printf '%s\n' "${journal}" \
+          > "${EVIDENCE_DIRECTORY}/manifest-scoped-journal.txt"
         docker exec "${CONTAINER_NAME}" \
           journalctl -u stateforge-agent.service --no-pager || true
-        printf 'Agent did not accept Provider manifest %s.\n' \
-          "${PROVIDER_INSTANCE_ID}" >&2
+        printf 'Agent did not accept Provider manifest %s generation %s.\n' \
+          "${PROVIDER_INSTANCE_ID}" "${ENDPOINT_GENERATION}" >&2
         exit 1

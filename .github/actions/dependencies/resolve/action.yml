@@ -1,0 +1,71 @@
+name: Resolve dependency revisions
+description: Resolve requested Protocol and Provider refs to immutable commits.
+
+inputs:
+  repository-token:
+    description: Short-lived token with read access to both repositories.
+    required: true
+  provider-repository:
+    description: Repository containing the Provider runtime package.
+    required: false
+    default: stateforge-org/stateforge-provider-python
+  provider-ref:
+    description: Requested Provider branch, tag, or commit.
+    required: true
+  protocol-repository:
+    description: Repository containing the Protocol package.
+    required: false
+    default: stateforge-org/stateforge-protocol
+  protocol-ref:
+    description: Requested Protocol branch, tag, or commit.
+    required: true
+
+outputs:
+  provider-commit:
+    description: Immutable Provider commit selected from the requested ref.
+    value: ${{ steps.commits.outputs.provider-commit }}
+  protocol-commit:
+    description: Immutable Protocol commit selected from the requested ref.
+    value: ${{ steps.commits.outputs.protocol-commit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve Protocol revision
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        repository: ${{ inputs.protocol-repository }}
+        ref: ${{ inputs.protocol-ref }}
+        path: .stateforge-ci/resolved/protocol
+        token: ${{ inputs.repository-token }}
+        persist-credentials: false
+
+    - name: Resolve Provider revision
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        repository: ${{ inputs.provider-repository }}
+        ref: ${{ inputs.provider-ref }}
+        path: .stateforge-ci/resolved/provider
+        token: ${{ inputs.repository-token }}
+        persist-credentials: false
+
+    - name: Export immutable dependency commits
+      id: commits
+      shell: bash
+      run: |
+        set -euo pipefail
+        protocol_commit="$(git \
+          -C .stateforge-ci/resolved/protocol \
+          rev-parse --verify 'HEAD^{commit}')"
+        provider_commit="$(git \
+          -C .stateforge-ci/resolved/provider \
+          rev-parse --verify 'HEAD^{commit}')"
+        if [[ ! "${protocol_commit}" =~ ^[0-9a-f]{40}$ \
+          || ! "${provider_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+          printf 'Dependency resolution did not produce commit SHAs.\n' >&2
+          exit 1
+        fi
+        {
+          printf 'protocol-commit=%s\n' "${protocol_commit}"
+          printf 'provider-commit=%s\n' "${provider_commit}"
+        } >> "${GITHUB_OUTPUT}"

@@ -18,15 +18,23 @@ on:
         type: string
         default: stateforge-provider-fixture
       provider-ref:
-        description: Provider revision used by the dummy Provider.
+        description: Requested Provider revision retained for provenance.
         required: false
         type: string
         default: mvp/implementation
+      provider-commit:
+        description: Immutable Provider commit selected by the caller.
+        required: true
+        type: string
       protocol-ref:
-        description: Protocol revision shared by Agent and Provider.
+        description: Requested Protocol revision retained for provenance.
         required: false
         type: string
         default: mvp/implementation
+      protocol-commit:
+        description: Immutable Protocol commit selected by the caller.
+        required: true
+        type: string
       retention-days:
         description: Number of days to retain installed-system evidence.
         required: false
@@ -70,7 +78,9 @@ jobs:
         uses: ./.github/actions/provider/create-fixture
         with:
           repository-token: ${{ steps.source-token.outputs.token }}
+          provider-commit: ${{ inputs.provider-commit }}
           provider-ref: ${{ inputs.provider-ref }}
+          protocol-commit: ${{ inputs.protocol-commit }}
           protocol-ref: ${{ inputs.protocol-ref }}
 
       - name: Upload immutable Provider fixture bundle

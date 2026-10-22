@@ -3,11 +3,10 @@ name: Source validation
 on:
   workflow_call:
     inputs:
-      protocol-ref:
-        description: Protocol revision used to validate Agent source.
-        required: false
+      protocol-commit:
+        description: Immutable Protocol commit used to validate Agent source.
+        required: true
         type: string
-        default: mvp/implementation
 
 permissions:
   contents: read
@@ -27,9 +26,16 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: stateforge-org/stateforge-protocol
-          ref: ${{ inputs.protocol-ref }}
+          ref: ${{ inputs.protocol-commit }}
           path: .stateforge-ci/sources/protocol
           persist-credentials: false
+
+      - name: Verify immutable Protocol checkout
+        env:
+          PROTOCOL_COMMIT: ${{ inputs.protocol-commit }}
+        run: |
+          /bin/bash .github/actions/dependencies/verify-checkout.sh \
+            .stateforge-ci/sources/protocol "${PROTOCOL_COMMIT}"
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

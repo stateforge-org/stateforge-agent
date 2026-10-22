@@ -9,11 +9,30 @@ ACTIONS = ROOT / ".github" / "actions"
 SHA_LENGTH = 40
 DEPENDENCY_COUNT = 2
 HEALTH_SCENARIO_PROVIDER_COUNT = 3
+MANIFEST_ASSERTION_COUNT = 6
+AVAILABILITY_ASSERTION_COUNT = 10
 
 
 def read(path: Path) -> str:
     """Read one automation file as UTF-8 text."""
     return path.read_text(encoding="utf-8")
+
+
+def action_invocations(content: str, action: str) -> tuple[str, ...]:
+    """Return the complete YAML step for every use of a local action."""
+    lines = content.splitlines()
+    invocations: list[str] = []
+    for index, line in enumerate(lines):
+        if line.strip() != f"uses: {action}":
+            continue
+        start = index
+        while start > 0 and not lines[start].startswith("    - "):
+            start -= 1
+        end = index + 1
+        while end < len(lines) and not lines[end].startswith("    - "):
+            end += 1
+        invocations.append("\n".join(lines[start:end]))
+    return tuple(invocations)
 
 
 def test_capability_assertion_treats_a_missing_event_log_as_no_calls(
@@ -128,6 +147,9 @@ def test_installed_test_consumes_rpm_and_packaged_provider_wheels() -> None:
         ACTIONS / "provider" / "create-fixture" / "fixtures" / "manifest.py"
     )
     provider_start = read(ACTIONS / "provider" / "start" / "action.yml")
+    manifest_assertion = read(
+        ACTIONS / "provider" / "assert-manifest" / "action.yml"
+    )
 
     assert "actions/download-artifact@" in workflow
     assert (
@@ -153,8 +175,63 @@ def test_installed_test_consumes_rpm_and_packaged_provider_wheels() -> None:
         "PROVIDER_WHEEL: ${{ steps.provider.outputs.wheel-path }}" in fixture
     )
     assert "stateforge_provider-*.whl" in provider_start
+    assert "previous_generation" in provider_start
+    assert "resolve-ready-endpoint.sh" in provider_start
+    assert "agent-journal-cursor" in provider_start
+    assert '"--after-cursor=${JOURNAL_CURSOR}"' in manifest_assertion
+    assert "ENDPOINT_GENERATION" in manifest_assertion
     assert "from stateforge_provider import" in fixture_source
     assert "token: ${{ inputs.repository-token }}" in fixture
+
+
+def test_every_manifest_assertion_is_generation_and_cursor_scoped() -> None:
+    """Bind every installed manifest check to its Provider invocation."""
+    scenarios = "\n".join(
+        read(path) for path in ACTIONS.glob("rpm/test-installed/**/action.yml")
+    )
+    invocations = action_invocations(
+        scenarios,
+        "./.github/actions/provider/assert-manifest",
+    )
+
+    assert len(invocations) == MANIFEST_ASSERTION_COUNT
+    assert all("journal-cursor: ${{ steps." in step for step in invocations)
+    assert all(
+        "endpoint-generation: ${{ steps." in step for step in invocations
+    )
+
+
+def test_every_availability_assertion_is_transition_scoped() -> None:
+    """Require one post-trigger journal boundary for every state assertion."""
+    scenarios = "\n".join(
+        read(path) for path in ACTIONS.glob("rpm/test-installed/**/action.yml")
+    )
+    assertion = read(ACTIONS / "agent" / "assert-availability" / "action.yml")
+    invocations = action_invocations(
+        scenarios,
+        "./.github/actions/agent/assert-availability",
+    )
+
+    assert len(invocations) == AVAILABILITY_ASSERTION_COUNT
+    assert all("journal-cursor: ${{ steps." in step for step in invocations)
+    assert all(
+        "endpoint-generation: ${{ steps." in step for step in invocations
+    )
+    assert "minimum-occurrences" not in scenarios
+    assert "minimum-occurrences" not in assertion
+    assert '"--after-cursor=${JOURNAL_CURSOR}"' in assertion
+
+
+def test_agent_start_is_scoped_to_the_current_systemd_invocation() -> None:
+    """Reject historical startup logs and silent service replacements."""
+    action = read(ACTIONS / "agent" / "start" / "action.yml")
+    start_script = read(ACTIONS / "agent" / "start" / "start.sh")
+
+    assert '"${ACTION_PATH}/start.sh"' in action
+    assert "--property=InvocationID" in start_script
+    assert "check-ready-invocation.sh" in start_script
+    assert "service-invocation-id" in action
+    assert "grep -Fq 'StateForge Agent started'" not in start_script
 
 
 def test_private_sources_use_a_short_lived_github_app_token() -> None:
@@ -208,9 +285,12 @@ def test_private_sources_use_a_short_lived_github_app_token() -> None:
 
 
 def test_dependency_refs_are_configurable_and_traceable() -> None:
-    """Bind convenient requested refs to immutable tested artifacts."""
+    """Resolve convenient refs once and reuse immutable dependency commits."""
     release = read(WORKFLOWS / "rpm-release-candidate.yml")
-    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    pipeline = read(WORKFLOWS / "rpm-build-and-test.yml")
+    source = read(WORKFLOWS / "source-validation.yml")
+    installed = read(WORKFLOWS / "rpm-installed-test.yml")
+    resolver = read(ACTIONS / "dependencies" / "resolve" / "action.yml")
     fixture = read(ACTIONS / "provider" / "create-fixture" / "action.yml")
     setup = read(ACTIONS / "rpm" / "test-installed" / "setup" / "action.yml")
 
@@ -218,22 +298,35 @@ def test_dependency_refs_are_configurable_and_traceable() -> None:
         assert f"{ref}:\n" in release
         assert f"{ref}: ${{{{ inputs.{ref} }}}}" in release
     assert release.count("default: mvp/implementation") == DEPENDENCY_COUNT
+    assert pipeline.count("uses: ./.github/actions/dependencies/resolve") == 1
+    assert "ref: ${{ inputs.provider-ref }}" in resolver
+    assert "ref: ${{ inputs.protocol-ref }}" in resolver
     assert (
-        "git -C .stateforge-ci/sources/protocol rev-parse --verify HEAD"
-        in fixture
+        "provider-commit: ${{ needs.resolve.outputs.provider-commit }}"
+        in pipeline
     )
     assert (
-        "git -C .stateforge-ci/sources/provider rev-parse --verify HEAD"
-        in fixture
+        "protocol-commit: ${{ needs.resolve.outputs.protocol-commit }}"
+        in pipeline
     )
+    assert "ref: ${{ inputs.protocol-commit }}" in source
+    assert "inputs.protocol-ref" not in source
+    assert "provider-commit: ${{ inputs.provider-commit }}" in installed
+    assert "protocol-commit: ${{ inputs.protocol-commit }}" in installed
+    assert "ref: ${{ inputs.provider-commit }}" in fixture
+    assert "ref: ${{ inputs.protocol-commit }}" in fixture
+    assert "ref: ${{ inputs.provider-ref }}" not in fixture
+    assert "ref: ${{ inputs.protocol-ref }}" not in fixture
+    assert "dependencies/verify-checkout.sh" in source
+    assert "dependencies/verify-checkout.sh" in fixture
     assert '"${OUTPUT_DIRECTORY}/dependency-provenance.json"' in fixture
     assert "requested_ref:" in fixture
     assert "resolved_commit:" in fixture
     assert "wheel_sha256:" in fixture
     assert "${{ steps.fixture.outputs.provenance-path }}" in setup
     assert "dependency-provenance.json" in setup
-    assert "provider-ref: ${{ inputs.provider-ref }}" in workflow
-    assert "protocol-ref: ${{ inputs.protocol-ref }}" in workflow
+    assert "provider-ref: ${{ inputs.provider-ref }}" in installed
+    assert "protocol-ref: ${{ inputs.protocol-ref }}" in installed
 
 
 def test_installed_python_and_rpm_identity_must_agree() -> None:
@@ -285,7 +378,7 @@ def test_shared_pipeline_passes_one_artifact_from_build_to_test() -> None:
     workflow = read(WORKFLOWS / "rpm-build-and-test.yml")
     installed = read(WORKFLOWS / "rpm-installed-test.yml")
 
-    assert "needs: build" in workflow
+    assert "      - build" in workflow
     assert (
         "artifact-name: ${{ needs.build.outputs.artifact-name }}" in workflow
     )
@@ -319,6 +412,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "agent/collect-evidence",
         "agent/install",
         "agent/start",
+        "dependencies/resolve",
         "provider/assert-manifest",
         "provider/create-fixture",
         "provider/set-health",
@@ -357,10 +451,19 @@ def test_installed_test_always_collects_and_cleans_up() -> None:
         ACTIONS / "rpm" / "test-installed" / "cleanup" / "action.yml"
     )
     evidence = read(ACTIONS / "agent" / "collect-evidence" / "action.yml")
+    diagnostics = read(
+        ACTIONS / "agent" / "collect-evidence" / "collect-diagnostics.sh"
+    )
 
     assert "if: ${{ always() }}" in action
     assert "./.github/actions/agent/collect-evidence" in cleanup
-    assert "journalctl -u stateforge-agent.service" in evidence
+    assert "collect-diagnostics.sh" in evidence
+    assert "journalctl -u stateforge-agent.service" in diagnostics
+    assert "provider-identities" in diagnostics
+    assert "provider-state-metadata.txt" in diagnostics
+    assert "provider-state-sha256.txt" in diagnostics
+    assert "systemd-invocations.json" in diagnostics
+    assert "InvocationID" in diagnostics
     assert "rpm -e stateforge-agent" in evidence
     assert 'docker rm --force "${CONTAINER_NAME}"' in evidence
 
@@ -402,7 +505,9 @@ def test_installed_health_scenario_uses_real_artifacts_and_processes() -> None:
     fixture = read(
         ACTIONS / "provider" / "create-fixture" / "fixtures" / "manifest.py"
     )
-    assertion = read(ACTIONS / "agent" / "assert-availability" / "action.yml")
+    assertion_checker = read(
+        ACTIONS / "agent" / "assert-availability" / "check-journal.sh"
+    )
 
     assert "provider-availability" in workflow
     assert "./.github/actions/rpm/test-installed/setup" in scenario
@@ -415,8 +520,8 @@ def test_installed_health_scenario_uses_real_artifacts_and_processes() -> None:
     assert "./.github/actions/agent/assert-availability" in scenario
     assert "HealthStatus" in fixture
     assert "refresh_health" in fixture
-    assert "Provider availability changed:" in assertion
-    assert "endpoint_generation=${ENDPOINT_GENERATION}" in assertion
+    assert "Provider availability changed:" in assertion_checker
+    assert "endpoint_generation=${ENDPOINT_GENERATION}" in assertion_checker
 
 
 def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (

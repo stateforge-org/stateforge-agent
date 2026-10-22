@@ -37,26 +37,8 @@ runs:
           exit 0
         fi
 
-        docker inspect "${CONTAINER_NAME}" \
-          > "${EVIDENCE_DIRECTORY}/container-inspect.json" 2>&1 || true
-        docker logs "${CONTAINER_NAME}" \
-          > "${EVIDENCE_DIRECTORY}/container.log" 2>&1 || true
-        docker exec "${CONTAINER_NAME}" \
-          systemctl status stateforge-agent.service --no-pager \
-          > "${EVIDENCE_DIRECTORY}/agent-service-status.txt" 2>&1 || true
-        docker exec "${CONTAINER_NAME}" \
-          journalctl -u stateforge-agent.service --no-pager -n 500 \
-          > "${EVIDENCE_DIRECTORY}/agent-journal.txt" 2>&1 || true
-        docker exec "${CONTAINER_NAME}" bash -lc \
-          "journalctl --no-pager -n 500 -u 'stateforge-test-*'" \
-          > "${EVIDENCE_DIRECTORY}/provider-journal.txt" 2>&1 || true
-        docker exec "${CONTAINER_NAME}" ps -ef \
-          > "${EVIDENCE_DIRECTORY}/processes.txt" 2>&1 || true
-        docker exec "${CONTAINER_NAME}" bash -lc \
-          'find /run/stateforge-agent/providers -maxdepth 1 -type f -name "*.sfp.json" -print -exec cat {} \;' \
-          > "${EVIDENCE_DIRECTORY}/provider-descriptors.txt" 2>&1 || true
-        docker exec "${CONTAINER_NAME}" rpm -V --nodeps stateforge-agent \
-          > "${EVIDENCE_DIRECTORY}/rpm-final-verify.txt" 2>&1 || true
+        /bin/bash "${GITHUB_ACTION_PATH}/collect-diagnostics.sh" \
+          "${CONTAINER_NAME}" "${EVIDENCE_DIRECTORY}"
 
         status=0
         docker exec "${CONTAINER_NAME}" \
