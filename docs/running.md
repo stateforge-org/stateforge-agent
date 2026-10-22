@@ -22,6 +22,40 @@ The packaged system service invokes the same `run` command. Process
 supervision, restart policy, runtime directory creation, and reload signaling
 belong to the service manager rather than the Python process itself.
 
+## Process exit status
+
+The `stateforge-agent` executable has three stable exit statuses:
+
+| Status | Meaning |
+| ---: | --- |
+| `0` | The command succeeded, or the daemon completed a graceful shutdown. |
+| `1` | A fatal Agent runtime or operational failure prevented continued service. |
+| `2` | The command invocation or effective configuration was invalid. |
+
+Help and version output, a successful `check-config`, and an orderly daemon
+shutdown return status `0`. During normal daemon operation, `SIGINT` and
+`SIGTERM` request that orderly shutdown: the Agent stops its Provider sessions
+and watchers before returning `0`.
+
+A failure that affects only one Provider connection, manifest, or Health
+Watch is isolated to that Provider and does not terminate the Agent. A fatal
+Agent-wide failure, such as an unusable Provider discovery directory, returns
+status `1`. An unexpected exception remains visible with its traceback and the
+Python executable terminates unsuccessfully with status `1`.
+
+Invalid command-line syntax and configuration loading or validation failures
+return status `2`. The RPM systemd unit uses `Restart=on-failure`, but declares
+`RestartPreventExitStatus=2`: runtime failures are restarted, while a
+persistent configuration error stops the service until an operator corrects
+the configuration and starts it again. A requested `systemctl stop` is handled
+through graceful `SIGTERM` shutdown.
+
+These values are StateForge Agent exit statuses. Shell statuses derived from
+an external fatal signal, such as `137` after `SIGKILL`, are operating-system
+conventions and are not emitted by the Agent. Likewise, gRPC status codes
+describe individual remote procedure calls and are unrelated to process exit
+status.
+
 ## Provider activation
 
 For each discovered Provider endpoint, the Agent opens the local gRPC channel,

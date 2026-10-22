@@ -9,6 +9,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from stateforge_agent._config import ConfigurationError, load_configuration
+from stateforge_agent._process import ProcessExitCode
 from stateforge_agent._runtime import run_agent
 
 _DEFAULT_CONFIG_PATH = Path("/etc/stateforge-agent/config.toml")
@@ -38,7 +39,7 @@ class _StateForgeHelpFormatter(argparse.HelpFormatter):
         return super()._format_action(action)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> ProcessExitCode:
     """Run the StateForge Agent command-line interface."""
     parser = _create_parser()
     arguments = parser.parse_args(argv)
@@ -55,7 +56,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ConfigurationError as error:
         sys.stderr.write(f"{error}\n")
-        return 2
+        return ProcessExitCode.INVALID_INPUT
 
     if arguments.command == "run":
         return run_agent(loaded.config)
@@ -66,7 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"Fingerprint: {loaded.fingerprint}\n"
         f"Sources:\n{source_list}\n"
     )
-    return 0
+    return ProcessExitCode.SUCCESS
 
 
 def _create_parser() -> argparse.ArgumentParser:

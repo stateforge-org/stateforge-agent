@@ -225,7 +225,9 @@ produce the same fingerprint.
 
 Validation errors identify both the dotted field name and the source that
 defined the invalid value. `check-config` returns exit status `0` when valid
-and `2` when loading or validation fails.
+and `2` when loading or validation fails. See
+[Process exit status](running.md#process-exit-status) for the complete
+executable contract and packaged-service restart behavior.
 
 You can validate another primary file:
 
