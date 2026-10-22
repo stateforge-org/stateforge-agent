@@ -44,6 +44,7 @@ runs:
         provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
         endpoint-generation: ${{ steps.provider.outputs.endpoint-generation }}
         state: available
+        journal-cursor: ${{ steps.provider.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/availability
 
     - name: Exercise Capability Assessment through the installed Agent

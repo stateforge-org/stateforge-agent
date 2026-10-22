@@ -51,6 +51,8 @@ runs:
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
         provider-instance-id: ${{ steps.provider-a.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-a.outputs.endpoint-generation }}
+        journal-cursor: ${{ steps.provider-a.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-a
 
     - name: Assert second manifest
@@ -58,6 +60,8 @@ runs:
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
         provider-instance-id: ${{ steps.provider-b.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.provider-b.outputs.endpoint-generation }}
+        journal-cursor: ${{ steps.provider-b.outputs.agent-journal-cursor }}
         evidence-directory: ${{ inputs.evidence-directory }}/provider-b
 
     - name: Assert independent Provider identities

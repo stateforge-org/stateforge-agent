@@ -12,12 +12,19 @@ inputs:
     description: Public Health transition to request.
     required: true
 
+outputs:
+  agent-journal-cursor:
+    description: Agent journal boundary captured before the Health signal.
+    value: ${{ steps.transition.outputs.agent-journal-cursor }}
+
 runs:
   using: composite
   steps:
     - name: Publish Provider Health transition
+      id: transition
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
         CONTAINER_NAME: ${{ inputs.container-name }}
         TRANSITION: ${{ inputs.transition }}
         UNIT_NAME: ${{ inputs.unit-name }}
@@ -43,5 +50,10 @@ runs:
             exit 2
             ;;
         esac
+        agent_journal_cursor="$(/bin/bash \
+          "${ACTION_PATH}/../_shared/capture-agent-journal-cursor.sh" \
+          "${CONTAINER_NAME}")"
         docker exec "${CONTAINER_NAME}" \
           systemctl kill --signal "${signal_name}" "${UNIT_NAME}"
+        printf 'agent-journal-cursor=%s\n' "${agent_journal_cursor}" \
+          >> "${GITHUB_OUTPUT}"

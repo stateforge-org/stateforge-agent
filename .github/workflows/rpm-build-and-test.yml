@@ -34,6 +34,12 @@ on:
       artifact-name:
         description: Tested RPM artifact, suitable for a later publish job.
         value: ${{ jobs.build.outputs.artifact-name }}
+      provider-commit:
+        description: Immutable Provider commit used by the test run.
+        value: ${{ jobs.resolve.outputs.provider-commit }}
+      protocol-commit:
+        description: Immutable Protocol commit used by the test run.
+        value: ${{ jobs.resolve.outputs.protocol-commit }}
       version:
         description: Version embedded in the tested RPM.
         value: ${{ jobs.build.outputs.version }}
@@ -45,10 +51,44 @@ permissions:
   contents: read
 
 jobs:
+  resolve:
+    name: Resolve dependency revisions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      provider-commit: ${{ steps.dependencies.outputs.provider-commit }}
+      protocol-commit: ${{ steps.dependencies.outputs.protocol-commit }}
+    steps:
+      - name: Check out dependency resolver
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Mint dependency source token
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.source_app_id }}
+          private-key: ${{ secrets.source_private_key }}
+          owner: stateforge-org
+          repositories: |
+            stateforge-protocol
+            stateforge-provider-python
+          permission-contents: read
+
+      - name: Resolve requested dependency revisions once
+        id: dependencies
+        uses: ./.github/actions/dependencies/resolve
+        with:
+          repository-token: ${{ steps.source-token.outputs.token }}
+          provider-ref: ${{ inputs.provider-ref }}
+          protocol-ref: ${{ inputs.protocol-ref }}
+
   source:
+    needs: resolve
     uses: ./.github/workflows/source-validation.yml
     with:
-      protocol-ref: ${{ inputs.protocol-ref }}
+      protocol-commit: ${{ needs.resolve.outputs.protocol-commit }}
 
   build:
     uses: ./.github/workflows/rpm-build.yml
@@ -57,13 +97,17 @@ jobs:
       retention-days: ${{ inputs.retention-days }}
 
   test:
-    needs: build
+    needs:
+      - resolve
+      - build
     uses: ./.github/workflows/rpm-installed-test.yml
     with:
       artifact-name: ${{ needs.build.outputs.artifact-name }}
       evidence-name: stateforge-agent-system-test-${{ github.run_id }}
       fixture-artifact-name: stateforge-provider-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+      provider-commit: ${{ needs.resolve.outputs.provider-commit }}
       provider-ref: ${{ inputs.provider-ref }}
+      protocol-commit: ${{ needs.resolve.outputs.protocol-commit }}
       protocol-ref: ${{ inputs.protocol-ref }}
       retention-days: ${{ inputs.retention-days }}
     secrets:

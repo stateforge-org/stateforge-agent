@@ -9,12 +9,19 @@ inputs:
     description: Transient systemd unit running the Provider fixture.
     required: true
 
+outputs:
+  agent-journal-cursor:
+    description: Agent journal boundary captured before Provider shutdown.
+    value: ${{ steps.stop.outputs.agent-journal-cursor }}
+
 runs:
   using: composite
   steps:
     - name: Stop Provider process
+      id: stop
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
         CONTAINER_NAME: ${{ inputs.container-name }}
         UNIT_NAME: ${{ inputs.unit-name }}
       run: |
@@ -23,9 +30,14 @@ runs:
           printf 'Unsafe Provider fixture unit: %s\n' "${UNIT_NAME}" >&2
           exit 2
         fi
+        agent_journal_cursor="$(/bin/bash \
+          "${ACTION_PATH}/../_shared/capture-agent-journal-cursor.sh" \
+          "${CONTAINER_NAME}")"
         docker exec "${CONTAINER_NAME}" systemctl stop "${UNIT_NAME}"
         if docker exec "${CONTAINER_NAME}" \
           systemctl is-active --quiet "${UNIT_NAME}"; then
           printf 'Provider fixture is still active: %s\n' "${UNIT_NAME}" >&2
           exit 1
         fi
+        printf 'agent-journal-cursor=%s\n' "${agent_journal_cursor}" \
+          >> "${GITHUB_OUTPUT}"

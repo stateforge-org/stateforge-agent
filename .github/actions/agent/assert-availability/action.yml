@@ -14,10 +14,9 @@ inputs:
   state:
     description: Expected Agent availability state.
     required: true
-  minimum-occurrences:
-    description: Minimum matching transitions required in the Agent journal.
-    required: false
-    default: "1"
+  journal-cursor:
+    description: Agent journal boundary captured before the triggering action.
+    required: true
   evidence-directory:
     description: Host directory receiving the matched transition.
     required: true
@@ -29,13 +28,14 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Assert current Agent availability
+    - name: Assert transition-scoped Agent availability
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
         CONTAINER_NAME: ${{ inputs.container-name }}
         ENDPOINT_GENERATION: ${{ inputs.endpoint-generation }}
         EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
-        MINIMUM_OCCURRENCES: ${{ inputs.minimum-occurrences }}
+        JOURNAL_CURSOR: ${{ inputs.journal-cursor }}
         PROVIDER_INSTANCE_ID: ${{ inputs.provider-instance-id }}
         STATE: ${{ inputs.state }}
         TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
@@ -50,30 +50,51 @@ runs:
             ;;
         esac
         if [[ ! "${ENDPOINT_GENERATION}" =~ ^[1-9][0-9]*$ || \
-              ! "${MINIMUM_OCCURRENCES}" =~ ^[1-9][0-9]*$ || \
-              ! "${TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
-          printf 'Availability assertion inputs must be positive integers.\n' >&2
+              ! "${TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ || \
+              -z "${JOURNAL_CURSOR}" ]]; then
+          printf 'Availability assertion inputs are invalid.\n' >&2
           exit 2
         fi
 
         mkdir -p "${EVIDENCE_DIRECTORY}"
-        evidence="${EVIDENCE_DIRECTORY}/${STATE}-${MINIMUM_OCCURRENCES}.txt"
+        cursor_digest="$(printf '%s' "${JOURNAL_CURSOR}" \
+          | sha256sum | cut -c1-12)"
+        evidence="${EVIDENCE_DIRECTORY}/${STATE}-${cursor_digest}.txt"
         deadline=$((SECONDS + TIMEOUT_SECONDS))
+        journal=""
         while (( SECONDS < deadline )); do
-          journal="$(docker exec "${CONTAINER_NAME}" \
-            journalctl -u stateforge-agent.service --no-pager -o cat)"
-          matches="$(grep -F 'Provider availability changed:' <<< "${journal}" \
-            | grep -F "provider_instance_id=${PROVIDER_INSTANCE_ID}" \
-            | grep -F "endpoint_generation=${ENDPOINT_GENERATION}" \
-            | grep -F "state=${STATE}" || true)"
-          count="$(grep -c . <<< "${matches}" || true)"
-          if (( count >= MINIMUM_OCCURRENCES )); then
-            tail -n 1 <<< "${matches}" > "${evidence}"
-            exit 0
+          if ! journal="$(docker exec "${CONTAINER_NAME}" \
+            journalctl -u stateforge-agent.service --no-pager -o cat \
+              "--after-cursor=${JOURNAL_CURSOR}")"; then
+            printf 'Could not read the transition-scoped Agent journal.\n' >&2
+            exit 1
           fi
+
+          set +e
+          match="$(printf '%s\n' "${journal}" \
+            | /bin/bash "${ACTION_PATH}/check-journal.sh" \
+              "${PROVIDER_INSTANCE_ID}" "${ENDPOINT_GENERATION}" \
+              "${STATE}")"
+          match_status=$?
+          set -e
+          case "${match_status}" in
+            0)
+              printf '%s\n' "${match}" > "${evidence}"
+              exit 0
+              ;;
+            3)
+              ;;
+            *)
+              printf 'Availability journal classifier failed with status %s.\n' \
+                "${match_status}" >&2
+              exit 1
+              ;;
+          esac
           sleep 1
         done
 
+        printf '%s\n' "${journal}" \
+          > "${EVIDENCE_DIRECTORY}/${STATE}-${cursor_digest}-scoped-journal.txt"
         docker exec "${CONTAINER_NAME}" \
           journalctl -u stateforge-agent.service --no-pager || true
         printf 'Agent did not report state=%s for Provider %s generation %s.\n' \

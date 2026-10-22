@@ -18,17 +18,21 @@ inputs:
     required: false
     default: stateforge-org/stateforge-provider-python
   provider-ref:
-    description: Provider revision to build; use a commit for reproducible runs.
-    required: false
-    default: mvp/implementation
+    description: Requested Provider revision retained for provenance.
+    required: true
+  provider-commit:
+    description: Immutable Provider commit to build.
+    required: true
   protocol-repository:
     description: Repository containing the public Protocol package.
     required: false
     default: stateforge-org/stateforge-protocol
   protocol-ref:
-    description: Protocol revision to build; use a commit for reproducible runs.
-    required: false
-    default: mvp/implementation
+    description: Requested Protocol revision retained for provenance.
+    required: true
+  protocol-commit:
+    description: Immutable Protocol commit to build.
+    required: true
 
 outputs:
   fixture-path:
@@ -48,7 +52,7 @@ runs:
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         repository: ${{ inputs.protocol-repository }}
-        ref: ${{ inputs.protocol-ref }}
+        ref: ${{ inputs.protocol-commit }}
         path: .stateforge-ci/sources/protocol
         token: ${{ inputs.repository-token }}
         persist-credentials: false
@@ -57,10 +61,23 @@ runs:
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         repository: ${{ inputs.provider-repository }}
-        ref: ${{ inputs.provider-ref }}
+        ref: ${{ inputs.provider-commit }}
         path: .stateforge-ci/sources/provider
         token: ${{ inputs.repository-token }}
         persist-credentials: false
+
+    - name: Verify immutable dependency checkouts
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PROVIDER_COMMIT: ${{ inputs.provider-commit }}
+        PROTOCOL_COMMIT: ${{ inputs.protocol-commit }}
+      run: |
+        set -euo pipefail
+        /bin/bash "${ACTION_PATH}/../../dependencies/verify-checkout.sh" \
+          .stateforge-ci/sources/protocol "${PROTOCOL_COMMIT}"
+        /bin/bash "${ACTION_PATH}/../../dependencies/verify-checkout.sh" \
+          .stateforge-ci/sources/provider "${PROVIDER_COMMIT}"
 
     - name: Set up package builder
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
