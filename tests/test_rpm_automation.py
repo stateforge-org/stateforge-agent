@@ -129,6 +129,16 @@ def test_rpm_version_has_one_source_of_truth() -> None:
     assert "inputs.version" not in automation
 
 
+def test_packaged_service_restarts_only_recoverable_runtime_failures() -> None:
+    """Do not restart-loop when operator configuration is invalid."""
+    service = read(
+        ROOT / "packaging" / "rpm" / "SOURCES" / "stateforge-agent.service"
+    )
+
+    assert "Restart=on-failure" in service
+    assert "RestartPreventExitStatus=2" in service
+
+
 def test_installed_test_consumes_rpm_and_packaged_provider_wheels() -> None:
     """Exercise the built RPM against an independently packaged Provider."""
     workflow = read(WORKFLOWS / "rpm-installed-test.yml")

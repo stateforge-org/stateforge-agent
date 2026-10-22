@@ -9,6 +9,7 @@ from stateforge_agent._config import (
     ConfigurationError,
     load_configuration,
 )
+from stateforge_agent._process import ProcessExitCode
 from stateforge_agent.cli import main
 
 _VALID_CONFIGURATION = """
@@ -35,7 +36,15 @@ destination = "stderr"
 """.strip()
 
 _FINAL_HEALTH_INTERVAL = 45
-_CONFIGURATION_ERROR_EXIT_CODE = 2
+_SUCCESS_EXIT_CODE = 0
+_RUNTIME_FAILURE_EXIT_CODE = 1
+_INVALID_INPUT_EXIT_CODE = 2
+
+
+def test_process_exit_codes_are_stable() -> None:
+    assert int(ProcessExitCode.SUCCESS) == _SUCCESS_EXIT_CODE
+    assert int(ProcessExitCode.RUNTIME_FAILURE) == _RUNTIME_FAILURE_EXIT_CODE
+    assert int(ProcessExitCode.INVALID_INPUT) == _INVALID_INPUT_EXIT_CODE
 
 
 def _write_configuration(directory: Path) -> Path:
@@ -231,7 +240,7 @@ def test_check_config_command_succeeds(
     exit_code = main(["check-config", "--config", str(config_path)])
 
     output = capsys.readouterr()
-    assert exit_code == 0
+    assert exit_code is ProcessExitCode.SUCCESS
     assert "Configuration is valid" in output.out
     assert "sha256:" in output.out
     assert output.err == ""
@@ -246,7 +255,7 @@ def test_check_config_command_reports_errors(
     exit_code = main(["check-config", "--config", str(config_path)])
 
     output = capsys.readouterr()
-    assert exit_code == _CONFIGURATION_ERROR_EXIT_CODE
+    assert exit_code is ProcessExitCode.INVALID_INPUT
     assert output.out == ""
     assert "does not exist" in output.err
 
@@ -258,15 +267,17 @@ def test_run_command_loads_configuration_and_starts_runtime(
     config_path = _write_configuration(tmp_path)
     observed_urls: list[str] = []
 
-    def fake_run_agent(configuration: AgentConfiguration) -> int:
+    def fake_run_agent(
+        configuration: AgentConfiguration,
+    ) -> ProcessExitCode:
         observed_urls.append(configuration.control_plane.url)
-        return 0
+        return ProcessExitCode.SUCCESS
 
     monkeypatch.setattr("stateforge_agent.cli.run_agent", fake_run_agent)
 
     exit_code = main(["run", "--config", str(config_path)])
 
-    assert exit_code == 0
+    assert exit_code is ProcessExitCode.SUCCESS
     assert observed_urls == ["https://control.stateforge.example"]
 
 
@@ -290,3 +301,27 @@ def test_root_help_uses_stateforge_cli_layout(
     assert "Global Options:" in output.out
     assert "Run 'stateforge-agent COMMAND --help'" in output.out
     assert output.err == ""
+
+
+def test_version_uses_success_exit_status(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as captured:
+        main(["--version"])
+
+    output = capsys.readouterr()
+    assert captured.value.code == ProcessExitCode.SUCCESS
+    assert output.out.startswith("stateforge-agent ")
+    assert output.err == ""
+
+
+def test_invalid_invocation_uses_invalid_input_exit_status(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as captured:
+        main([])
+
+    output = capsys.readouterr()
+    assert captured.value.code == ProcessExitCode.INVALID_INPUT
+    assert output.out == ""
+    assert "the following arguments are required: COMMAND" in output.err

@@ -14,6 +14,7 @@ from stateforge_protocol.sfp.endpoint_discovery.v1 import (
 
 from stateforge_agent import __version__
 from stateforge_agent._config.models import AgentConfiguration
+from stateforge_agent._process import ProcessExitCode
 from stateforge_agent._runtime.layout import (
     SYSTEM_RUNTIME_LAYOUT,
     RuntimeLayout,
@@ -46,19 +47,19 @@ def run_agent(
     configuration: AgentConfiguration,
     *,
     runtime_layout: RuntimeLayout = SYSTEM_RUNTIME_LAYOUT,
-) -> int:
+) -> ProcessExitCode:
     """Run the Agent until a normal process-termination signal arrives."""
     configure_logging(configuration.logging)
     try:
         return asyncio.run(_run_agent(configuration, runtime_layout))
     except KeyboardInterrupt:
-        return 0
+        return ProcessExitCode.SUCCESS
 
 
 async def _run_agent(
     configuration: AgentConfiguration,
     runtime_layout: RuntimeLayout = SYSTEM_RUNTIME_LAYOUT,
-) -> int:
+) -> ProcessExitCode:
     """Prepare runtime services and drive the monitoring loop."""
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -100,14 +101,14 @@ async def _run_agent(
             await _process_events(monitor, sessions, events)
     except ProviderDirectoryError:
         _LOGGER.exception("Provider directory monitoring failed")
-        return 1
+        return ProcessExitCode.RUNTIME_FAILURE
     finally:
         await sessions.close()
         for installed_signal in installed_signals:
             loop.remove_signal_handler(installed_signal)
 
     _LOGGER.info("StateForge Agent stopped")
-    return 0
+    return ProcessExitCode.SUCCESS
 
 
 def _install_signal_handlers(

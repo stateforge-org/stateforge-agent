@@ -17,6 +17,7 @@ from stateforge_agent._config.models import (
     LoggingConfiguration,
     ProviderConfiguration,
 )
+from stateforge_agent._process import ProcessExitCode
 from stateforge_agent._runtime import daemon
 from stateforge_agent._runtime.daemon import (
     _descriptor_provider_instance_id,
@@ -29,7 +30,10 @@ from stateforge_agent._sfp import (
     SfpManifestError,
     SfpVersion,
 )
-from stateforge_agent._sfp._runtime.discovery import ProviderDirectoryMonitor
+from stateforge_agent._sfp._runtime.discovery import (
+    ProviderDirectoryError,
+    ProviderDirectoryMonitor,
+)
 
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _EXPECTED_SIGNAL_HANDLERS = 2
@@ -202,7 +206,7 @@ async def test_agent_runtime_starts_and_stops_cleanly(
             _configuration(tmp_path),
             _runtime_layout(tmp_path),
         )
-        == 0
+        is ProcessExitCode.SUCCESS
     )
 
 
@@ -210,7 +214,7 @@ def test_run_agent_returns_daemon_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    expected_result = 7
+    expected_result = ProcessExitCode.RUNTIME_FAILURE
 
     def finish_immediately(coroutine):
         coroutine.close()
@@ -219,7 +223,7 @@ def test_run_agent_returns_daemon_result(
     monkeypatch.setattr(daemon.asyncio, "run", finish_immediately)
     monkeypatch.setattr(daemon, "configure_logging", Mock())
 
-    assert daemon.run_agent(_configuration(tmp_path)) == expected_result
+    assert daemon.run_agent(_configuration(tmp_path)) is expected_result
 
 
 def test_run_agent_handles_keyboard_interrupt(
@@ -233,7 +237,27 @@ def test_run_agent_handles_keyboard_interrupt(
     monkeypatch.setattr(daemon.asyncio, "run", interrupt)
     monkeypatch.setattr(daemon, "configure_logging", Mock())
 
-    assert daemon.run_agent(_configuration(tmp_path)) == 0
+    assert (
+        daemon.run_agent(_configuration(tmp_path)) is ProcessExitCode.SUCCESS
+    )
+
+
+@pytest.mark.asyncio
+async def test_provider_directory_failure_returns_runtime_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_prepare(_monitor: ProviderDirectoryMonitor) -> None:
+        raise ProviderDirectoryError("unusable discovery directory")
+
+    monkeypatch.setattr(ProviderDirectoryMonitor, "prepare", fail_to_prepare)
+
+    result = await daemon._run_agent(
+        _configuration(tmp_path),
+        _runtime_layout(tmp_path),
+    )
+
+    assert result is ProcessExitCode.RUNTIME_FAILURE
 
 
 def test_signal_handlers_are_registered_when_supported() -> None:
