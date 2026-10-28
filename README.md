@@ -18,7 +18,8 @@ The current implementation provides:
 - validated and reusable local gRPC channels;
 - SFP handshake and version negotiation;
 - bounded Provider manifest retrieval, validation, and declaration caching;
-- standard gRPC Health Watch-based operational eligibility; and
+- standard gRPC Health Watch-based operational eligibility;
+- durable, idempotent acceptance of manifest-declared Provider triggers; and
 - bounded reconnection and endpoint replacement.
 
 Providers run as separate processes. They expose vendor-specific behavior over
@@ -104,7 +105,9 @@ mkdocs build --strict
 The test suite includes integration coverage for Provider discovery, channel
 establishment, SFP negotiation, manifest exchange, endpoint replacement,
 Provider Health transitions, eligibility fencing, connection loss, and
-recovery.
+recovery. It also covers real Provider trigger publication, acknowledgement,
+durable Agent restart persistence, idempotent replay, bounded capacity, and
+stale-session fencing.
 
 ## Documentation
 

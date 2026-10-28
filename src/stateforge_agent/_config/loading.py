@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import TypeAlias, cast
 from urllib.parse import urlsplit
 
+from stateforge_protocol.sfp.trigger_publication.v1 import (
+    contract as trigger_publication_contract,
+)
+
 from stateforge_agent._config.errors import (
     ConfigurationFileError,
     ConfigurationValidationError,
@@ -330,17 +334,19 @@ def _validate_configuration(
             "health_interval_seconds",
             "reconnect_initial_delay_seconds",
             "reconnect_max_delay_seconds",
+            "trigger_max_in_flight_publications",
         },
         required={
             "health_interval_seconds",
             "reconnect_initial_delay_seconds",
             "reconnect_max_delay_seconds",
+            "trigger_max_in_flight_publications",
         },
     )
     validator.table(
         ("journal",),
-        allowed={"backend"},
-        required={"backend"},
+        allowed={"backend", "maximum_pending_trigger_publications"},
+        required={"backend", "maximum_pending_trigger_publications"},
     )
     validator.table(
         ("logging",),
@@ -377,6 +383,19 @@ def _validate_configuration(
     reconnect_max_delay = validator.positive_integer(
         ("providers", "reconnect_max_delay_seconds")
     )
+    trigger_max_in_flight = validator.positive_integer(
+        ("providers", "trigger_max_in_flight_publications")
+    )
+    if (
+        trigger_max_in_flight
+        > trigger_publication_contract.MAX_IN_FLIGHT_PUBLICATIONS
+    ):
+        validator.add_issue(
+            ("providers", "trigger_max_in_flight_publications"),
+            "must not exceed the SFP Trigger Publication receive-window "
+            "limit of "
+            f"{trigger_publication_contract.MAX_IN_FLIGHT_PUBLICATIONS}",
+        )
     if (
         reconnect_initial_delay > 0
         and reconnect_max_delay > 0
@@ -389,6 +408,9 @@ def _validate_configuration(
         )
 
     journal_backend = validator.choice(("journal", "backend"), {"sqlite"})
+    maximum_pending_trigger_publications = validator.positive_integer(
+        ("journal", "maximum_pending_trigger_publications")
+    )
 
     log_level = validator.choice(
         ("logging", "level"),
@@ -412,9 +434,13 @@ def _validate_configuration(
             health_interval_seconds=health_interval,
             reconnect_initial_delay_seconds=reconnect_initial_delay,
             reconnect_max_delay_seconds=reconnect_max_delay,
+            trigger_max_in_flight_publications=trigger_max_in_flight,
         ),
         journal=JournalConfiguration(
             backend=cast(JournalBackend, journal_backend),
+            maximum_pending_trigger_publications=(
+                maximum_pending_trigger_publications
+            ),
         ),
         logging=LoggingConfiguration(
             level=cast(LogLevel, log_level),

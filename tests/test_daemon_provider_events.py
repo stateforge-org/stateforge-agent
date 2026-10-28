@@ -78,9 +78,11 @@ def _configuration(directory: Path) -> AgentConfiguration:
             health_interval_seconds=10,
             reconnect_initial_delay_seconds=1,
             reconnect_max_delay_seconds=30,
+            trigger_max_in_flight_publications=32,
         ),
         journal=JournalConfiguration(
             backend="sqlite",
+            maximum_pending_trigger_publications=10000,
         ),
         logging=LoggingConfiguration(
             level="info",

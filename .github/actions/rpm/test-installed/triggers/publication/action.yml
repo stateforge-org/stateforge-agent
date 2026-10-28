@@ -1,0 +1,116 @@
+name: Test installed Trigger Publication
+description: Verify real Provider events are durably accepted across Agent restart.
+
+inputs:
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario's evidence.
+    required: false
+    default: dist/agent-system-test-evidence/trigger-publication
+  fixture-directory:
+    description: Directory containing the exact Provider fixture bundle.
+    required: false
+    default: dist/provider-fixture
+
+outputs:
+  evidence-directory:
+    description: Absolute directory containing scenario evidence.
+    value: ${{ steps.cleanup.outputs.evidence-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare installed Agent
+      id: setup
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+        fixture-directory: ${{ inputs.fixture-directory }}
+
+    - name: Start real Provider fixture
+      id: provider
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+
+    - name: Assert decorated trigger acceptance
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        expected-triggers: stateforge.test/runtime.started@1
+        evidence-name: before-agent-restart
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Stop the installed Agent
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+      run: |
+        set -euo pipefail
+        docker exec "${CONTAINER_NAME}" \
+          systemctl stop stateforge-agent.service
+
+    - name: Start the same installed Agent again
+      uses: ./.github/actions/agent/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+
+    - name: Publish through the Provider callback API
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        UNIT_NAME: ${{ steps.provider.outputs.unit-name }}
+      run: |
+        set -euo pipefail
+        docker exec "${CONTAINER_NAME}" \
+          systemctl kill --kill-whom=main --signal=SIGALRM "${UNIT_NAME}"
+
+    - name: Assert restart persistence and callback acceptance
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        expected-triggers: >-
+          stateforge.test/runtime.started@1
+          stateforge.test/runtime.refreshed@1
+        evidence-name: after-agent-restart
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Preserve Provider acknowledgement evidence
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        set -euo pipefail
+        event_log=/var/lib/stateforge-provider-fixtures/provider-a/events.log
+        deadline=$((SECONDS + 60))
+        outcome=""
+        while (( SECONDS < deadline )); do
+          outcome="$(docker exec "${CONTAINER_NAME}" \
+            grep -E '^trigger-outcome:[0-9a-f-]+:accepted_new$' \
+              "${event_log}" || true)"
+          [[ -n "${outcome}" ]] && break
+          sleep 1
+        done
+        if [[ -z "${outcome}" ]]; then
+          printf 'Provider did not receive the terminal trigger acknowledgement.\n' >&2
+          exit 1
+        fi
+        printf '%s\n' "${outcome}" \
+          > "${EVIDENCE_DIRECTORY}/provider-trigger-outcome.txt"
+
+    - name: Preserve evidence and clean up
+      id: cleanup
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        container-name: stateforge-agent-system-test
+        evidence-directory: ${{ inputs.evidence-directory }}

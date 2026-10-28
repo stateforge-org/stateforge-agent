@@ -419,6 +419,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "agent/assert-availability",
         "agent/assert-capability-boundary",
         "agent/assert-capability-assessment",
+        "agent/assert-trigger-publication",
         "agent/collect-evidence",
         "agent/install",
         "agent/start",
@@ -438,6 +439,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "rpm/test-installed/lifecycle/multiple-providers",
         "rpm/test-installed/setup",
         "rpm/test-installed/smoke/manifest-exchange",
+        "rpm/test-installed/triggers/publication",
     }
     observed = {
         str(path.parent.relative_to(ACTIONS))
@@ -493,6 +495,7 @@ def test_each_installed_scenario_is_an_independent_action() -> None:
         "adversarial",
         "capability",
         "destructive",
+        "triggers",
     }
     for scenario in scenarios:
         content = read(scenario)
@@ -613,3 +616,43 @@ def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (
     assert "session_id" in boundary_assertion
     assert "endpoint_generation" in boundary_assertion
     assert "manifest_revision" in boundary_assertion
+
+
+def test_installed_trigger_scenario_uses_public_api_and_journal() -> None:
+    """Keep A4 evidence on exact packages and the durable Agent boundary."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario = read(
+        ACTIONS
+        / "rpm"
+        / "test-installed"
+        / "triggers"
+        / "publication"
+        / "action.yml"
+    )
+    assertion_action = read(
+        ACTIONS / "agent" / "assert-trigger-publication" / "action.yml"
+    )
+    assertion = read(
+        ACTIONS / "agent" / "assert-trigger-publication" / "assert.py"
+    )
+    fixture = read(
+        ACTIONS / "provider" / "create-fixture" / "fixtures" / "manifest.py"
+    )
+
+    assert "trigger-publication" in workflow
+    assert "./.github/actions/rpm/test-installed/setup" in scenario
+    assert "./.github/actions/provider/start" in scenario
+    assert "./.github/actions/agent/assert-trigger-publication" in scenario
+    assert "systemctl stop stateforge-agent.service" in scenario
+    assert "./.github/actions/agent/start" in scenario
+    assert "before-agent-restart" in scenario
+    assert "after-agent-restart" in scenario
+    assert "stateforge.test/runtime.started@1" in scenario
+    assert "stateforge.test/runtime.refreshed@1" in scenario
+    assert "@trigger(" in fixture
+    assert "publish_trigger(" in fixture
+    assert "/usr/bin/python3" in assertion_action
+    assert "mode=ro" in assertion
+    assert "validate_trigger_publication" in assertion
+    assert "compute_publication_content_fingerprint" in assertion
+    assert 'row["forwarding_state"] != "pending"' in assertion

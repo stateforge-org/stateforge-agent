@@ -19,6 +19,7 @@ nav:
   - Running the Agent: running.md
   - Configuration: configuration.md
   - Capability Assessment: sfp-capability-assessment.md
+  - Trigger Publication: sfp-trigger-publication.md
   - RPM CI/CD: ci-cd.md
   - Internal reference:
       - Configuration models: reference/configuration.md

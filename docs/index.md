@@ -29,7 +29,10 @@ The current runtime can:
 - cache accepted, immutable declarations independently of channel lifetime;
   and
 - collect bounded, read-only Capability Assessment evidence for declared
-  operations without converting that evidence into authorization.
+  operations without converting that evidence into authorization; and
+- consume manifest-declared Provider triggers, validate their payloads, and
+  durably assume bounded local delivery responsibility before acknowledging
+  them.
 
 The runtime reports a Provider as connected only after both session setup and
 manifest validation succeed. Operational eligibility is stricter: the exact
@@ -42,3 +45,9 @@ unsupported, and indeterminate outcomes together with their requirement
 states, reasons, and constraints. Assessment evidence is fenced to the exact
 session, manifest, availability generation, operation set, and execution
 context that produced it.
+
+Trigger Publication begins only for the exact current session while Provider
+Health reports `SERVING`. The Agent validates each event against the canonical
+P3 contract and accepted manifest schema, then commits its idempotency record
+before returning an acknowledgement. Accepted events remain pending in the
+Agent journal until the later SF-AOP forwarding boundary is implemented.

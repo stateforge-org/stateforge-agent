@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import os
 import signal
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import grpc
@@ -19,8 +20,10 @@ from stateforge_provider import (
     Provider,
     ProviderModel,
     RequirementCheckResult,
+    Trigger,
     operation,
     requirement_check,
+    trigger,
 )
 from stateforge_provider._services.capability_assessment.service import (
     CapabilityAssessmentService,
@@ -47,6 +50,19 @@ class FixtureResult(ProviderModel):
     value: str
 
 
+class FixtureTriggerPayload(ProviderModel):
+    """Describe one deterministic runtime event for installed tests."""
+
+    sequence: int
+    source: str
+
+
+_RUNTIME_REFRESHED = Trigger(
+    "stateforge.test/runtime.refreshed@1",
+    FixtureTriggerPayload,
+)
+
+
 class ManifestFixtureProvider(Provider):
     """Expose a valid manifest and deterministic public Health controls."""
 
@@ -57,6 +73,7 @@ class ManifestFixtureProvider(Provider):
     )
     version = "1.0.0"
     platforms = (Platform("linux", os.uname().machine),)
+    triggers = (_RUNTIME_REFRESHED,)
 
     def __init__(
         self,
@@ -72,6 +89,10 @@ class ManifestFixtureProvider(Provider):
         self._health_status = HealthStatus.healthy()
         self._fail_health = False
         self._health_tasks: set[asyncio.Task[None]] = set()
+        self._trigger_tasks: set[asyncio.Task[None]] = set()
+        self._startup_events: asyncio.Queue[FixtureTriggerPayload] = (
+            asyncio.Queue()
+        )
         self._event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
         self._target_path = Path(os.environ["STATEFORGE_TEST_TARGET_PATH"])
 
@@ -96,15 +117,26 @@ class ManifestFixtureProvider(Provider):
             HealthStatus.not_serving(),
             True,
         )
+        loop.add_signal_handler(signal.SIGALRM, self._schedule_trigger)
+        self._startup_events.put_nowait(
+            FixtureTriggerPayload(sequence=1, source="decorated")
+        )
 
     async def on_shutdown(self) -> None:
         """Remove fixture signal handlers and finish scheduled refreshes."""
         loop = asyncio.get_running_loop()
-        for signal_number in (signal.SIGUSR1, signal.SIGUSR2, signal.SIGHUP):
+        for signal_number in (
+            signal.SIGUSR1,
+            signal.SIGUSR2,
+            signal.SIGHUP,
+            signal.SIGALRM,
+        ):
             with contextlib.suppress(NotImplementedError, ValueError):
                 loop.remove_signal_handler(signal_number)
         if self._health_tasks:
             await asyncio.gather(*self._health_tasks, return_exceptions=True)
+        if self._trigger_tasks:
+            await asyncio.gather(*self._trigger_tasks, return_exceptions=True)
 
     async def health(self) -> HealthStatus:
         """Return the scenario-controlled Provider-wide status."""
@@ -177,6 +209,29 @@ class ManifestFixtureProvider(Provider):
         """Declare one operation whose current support is unresolved."""
         self._record("operation:indeterminate")
         return FixtureResult(value=request.value)
+
+    @trigger("stateforge.test/runtime.started@1")
+    async def runtime_started(self) -> AsyncIterator[FixtureTriggerPayload]:
+        """Publish one event through the decorated public Provider API."""
+        yield await self._startup_events.get()
+
+    def _schedule_trigger(self) -> None:
+        """Schedule callback publication from a process signal."""
+        task = asyncio.create_task(self._publish_callback_trigger())
+        self._trigger_tasks.add(task)
+        task.add_done_callback(self._trigger_tasks.discard)
+
+    async def _publish_callback_trigger(self) -> None:
+        """Publish and record one callback-driven terminal outcome."""
+        receipt = await self.publish_trigger(
+            _RUNTIME_REFRESHED,
+            FixtureTriggerPayload(sequence=2, source="callback"),
+        )
+        outcome = await receipt.outcome()
+        self._record(
+            "trigger-outcome:"
+            f"{outcome.publication_id}:{outcome.disposition.value}"
+        )
 
     def _record(self, event: str) -> None:
         """Record fixture-only evidence outside the inspected target."""

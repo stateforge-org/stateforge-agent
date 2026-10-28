@@ -108,6 +108,7 @@ jobs:
           - capability-mismatch
           - capability-limits
           - provider-availability
+          - trigger-publication
           - multiple-providers
           - invalid-descriptor
           - uninstall-reinstall
@@ -161,6 +162,13 @@ jobs:
       - name: Run Provider-availability scenario
         if: ${{ matrix.scenario == 'provider-availability' }}
         uses: ./.github/actions/rpm/test-installed/health/provider-availability
+        with:
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          fixture-directory: dist/provider-fixture
+
+      - name: Run Trigger Publication scenario
+        if: ${{ matrix.scenario == 'trigger-publication' }}
+        uses: ./.github/actions/rpm/test-installed/triggers/publication
         with:
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
           fixture-directory: dist/provider-fixture

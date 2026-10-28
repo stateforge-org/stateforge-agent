@@ -50,6 +50,15 @@ from stateforge_agent._sfp._services.manifest.client import (
 from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestDeclaration,
 )
+from stateforge_agent._sfp._services.trigger_publication.client import (
+    SfpTriggerPublicationError,
+    SfpTriggerPublicationStaleError,
+    SfpTriggerPublicationUnavailableError,
+)
+from stateforge_agent._sfp._services.trigger_publication.coordinator import (
+    TriggerPublicationCoordinator,
+    TriggerPublicationLease,
+)
 from stateforge_agent._sfp.version import SfpVersion
 
 _LOGGER = logging.getLogger(__name__)
@@ -140,6 +149,7 @@ class _ProviderRuntimeState:
     attempt_token: object | None = None
     channel_watcher: asyncio.Task[None] | None = None
     health_watcher: asyncio.Task[None] | None = None
+    trigger_watcher: asyncio.Task[None] | None = None
     retry_task: asyncio.Task[None] | None = None
     availability_generation: int = 0
 
@@ -170,6 +180,7 @@ class ProviderSessionManager:
         capability_assessment_client: (
             CapabilityAssessmentRequester | None
         ) = None,
+        trigger_publication: TriggerPublicationCoordinator | None = None,
     ) -> None:
         """Create an empty Provider session registry."""
         if not isinstance(agent_runtime_id, UUID):
@@ -234,6 +245,7 @@ class ProviderSessionManager:
             cache_entries=capability_assessment_cache_entries,
             client=capability_assessment_client,
         )
+        self._trigger_publication = trigger_publication
         self._providers: dict[UUID, _ProviderRuntimeState] = {}
         self._closed = False
         self._lock = asyncio.Lock()
@@ -601,12 +613,14 @@ class ProviderSessionManager:
             session = provider.active_session
             watcher = provider.channel_watcher
             health_watcher = provider.health_watcher
+            trigger_watcher = provider.trigger_watcher
             retry_task = provider.retry_task
             provider.desired_descriptor = None
             provider.active_session = None
             provider.attempt_token = None
             provider.channel_watcher = None
             provider.health_watcher = None
+            provider.trigger_watcher = None
             provider.retry_task = None
             provider.connection_status = ProviderConnectionStatus(
                 provider_instance_id=provider_instance_id,
@@ -633,6 +647,7 @@ class ProviderSessionManager:
         await _cancel_task(retry_task)
         await _cancel_task(watcher)
         await _cancel_task(health_watcher)
+        await _cancel_task(trigger_watcher)
         if session is not None:
             await session._channel.close()
 
@@ -655,6 +670,11 @@ class ProviderSessionManager:
                 for provider in self._providers.values()
                 if provider.health_watcher is not None
             )
+            trigger_watchers = tuple(
+                provider.trigger_watcher
+                for provider in self._providers.values()
+                if provider.trigger_watcher is not None
+            )
             retry_tasks = tuple(
                 provider.retry_task
                 for provider in self._providers.values()
@@ -667,6 +687,7 @@ class ProviderSessionManager:
                 provider.attempt_token = None
                 provider.channel_watcher = None
                 provider.health_watcher = None
+                provider.trigger_watcher = None
                 provider.retry_task = None
                 provider.connection_status = ProviderConnectionStatus(
                     provider_instance_id=provider_instance_id,
@@ -696,12 +717,16 @@ class ProviderSessionManager:
             watcher.cancel()
         for health_watcher in health_watchers:
             health_watcher.cancel()
+        for trigger_watcher in trigger_watchers:
+            trigger_watcher.cancel()
         if retry_tasks:
             await asyncio.gather(*retry_tasks, return_exceptions=True)
         if watchers:
             await asyncio.gather(*watchers, return_exceptions=True)
         if health_watchers:
             await asyncio.gather(*health_watchers, return_exceptions=True)
+        if trigger_watchers:
+            await asyncio.gather(*trigger_watchers, return_exceptions=True)
         for session in sessions:
             await session._channel.close()
         self._capability_assessment.clear()
@@ -1060,6 +1085,126 @@ class ProviderSessionManager:
                 status.eligible,
                 status.reason,
             )
+            self._synchronize_trigger_watcher(provider)
+
+    def _synchronize_trigger_watcher(
+        self,
+        provider: _ProviderRuntimeState,
+    ) -> None:
+        """Start or fence Trigger Publication with current availability."""
+        watcher = provider.trigger_watcher
+        status = provider.availability_status
+        session = provider.active_session
+        if (
+            self._trigger_publication is None
+            or status is None
+            or not status.eligible
+            or session is None
+            or not session.manifest.trigger_schemas
+        ):
+            provider.trigger_watcher = None
+            if watcher is not None:
+                watcher.cancel()
+            return
+        if watcher is not None and not watcher.done():
+            return
+        provider.trigger_watcher = asyncio.create_task(
+            self._watch_triggers(
+                session,
+                provider.availability_generation,
+            ),
+            name=f"stateforge-sfp-triggers-{session.provider_instance_id}",
+        )
+
+    async def _watch_triggers(
+        self,
+        session: ProviderSession,
+        availability_generation: int,
+    ) -> None:
+        """Maintain one fenced Trigger Publication stream with backoff."""
+        coordinator = self._trigger_publication
+        if coordinator is None:
+            return
+        lease = TriggerPublicationLease(
+            provider_instance_id=session.provider_instance_id,
+            endpoint_generation=session.endpoint_generation,
+            session_id=session.session_id,
+            manifest_revision=session.manifest.key.revision,
+            availability_generation=availability_generation,
+            trigger_schemas=session.manifest.trigger_schemas,
+            channel=session._channel,
+            session_token=session,
+        )
+        attempt_number = 0
+        try:
+            while True:
+                try:
+                    await coordinator.run(
+                        lease,
+                        assert_current=self._assert_trigger_stream_is_current,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except SfpTriggerPublicationStaleError:
+                    return
+                except SfpTriggerPublicationUnavailableError as error:
+                    delay = self._health_retry_delay(attempt_number)
+                    attempt_number += 1
+                    _LOGGER.info(
+                        "Scheduling Trigger Publication retry: "
+                        "provider_instance_id=%s endpoint_generation=%s "
+                        "attempt=%s delay_seconds=%.3f reason=%s",
+                        session.provider_instance_id,
+                        session.endpoint_generation,
+                        attempt_number,
+                        delay,
+                        error,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                except SfpTriggerPublicationError as error:
+                    _LOGGER.warning(
+                        "Trigger Publication stream rejected: "
+                        "provider_instance_id=%s endpoint_generation=%s "
+                        "error=%s",
+                        session.provider_instance_id,
+                        session.endpoint_generation,
+                        error,
+                    )
+                    return
+                raise SfpTriggerPublicationUnavailableError(
+                    "Trigger Publication stream ended"
+                )
+        finally:
+            async with self._lock:
+                provider = self._providers.get(session.provider_instance_id)
+                if (
+                    provider is not None
+                    and provider.trigger_watcher is asyncio.current_task()
+                ):
+                    provider.trigger_watcher = None
+
+    async def _assert_trigger_stream_is_current(
+        self,
+        lease: TriggerPublicationLease,
+    ) -> None:
+        """Fence Trigger Publication to one available current session."""
+        async with self._lock:
+            provider = self._providers.get(lease.provider_instance_id)
+            if (
+                provider is None
+                or provider.active_session is not lease.session_token
+                or provider.availability_generation
+                != lease.availability_generation
+            ):
+                raise SfpTriggerPublicationStaleError(
+                    "Trigger Publication session is no longer current"
+                )
+            status = provider.availability_status
+            if status is None or not status.eligible:
+                raise SfpTriggerPublicationStaleError(
+                    "Provider is unavailable for Trigger Publication"
+                )
 
     def _health_retry_delay(self, attempt_number: int) -> float:
         """Return a capped jittered delay for a failed Health Watch."""
@@ -1103,6 +1248,7 @@ class ProviderSessionManager:
     ) -> None:
         """Remove a failed active session without disturbing replacements."""
         health_watcher: asyncio.Task[None] | None = None
+        trigger_watcher: asyncio.Task[None] | None = None
         async with self._lock:
             provider = self._providers.get(session.provider_instance_id)
             if provider is None or provider.active_session is not session:
@@ -1110,6 +1256,8 @@ class ProviderSessionManager:
             provider.active_session = None
             health_watcher = provider.health_watcher
             provider.health_watcher = None
+            trigger_watcher = provider.trigger_watcher
+            provider.trigger_watcher = None
             if provider.channel_watcher is asyncio.current_task():
                 provider.channel_watcher = None
 
@@ -1154,6 +1302,7 @@ class ProviderSessionManager:
                 ),
             )
         await _cancel_task(health_watcher)
+        await _cancel_task(trigger_watcher)
         await session._channel.close()
         await self._schedule_retry(session.provider_instance_id)
 

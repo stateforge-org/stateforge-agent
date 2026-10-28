@@ -64,6 +64,24 @@ class ManifestDeclaration:
             raise RuntimeError("Validated manifest cache entry is corrupt")
         return frozenset(operations)
 
+    @property
+    def trigger_schemas(self) -> dict[str, dict[str, Any]]:
+        """Return payload schemas keyed by declared trigger identifier."""
+        triggers = self.as_dict().get("triggers")
+        if not isinstance(triggers, dict):
+            raise RuntimeError("Validated manifest cache entry is corrupt")
+        schemas: dict[str, dict[str, Any]] = {}
+        for identifier, declaration in triggers.items():
+            if not isinstance(identifier, str) or not isinstance(
+                declaration, dict
+            ):
+                raise RuntimeError("Validated manifest cache entry is corrupt")
+            schema = declaration.get("payloadSchema")
+            if not isinstance(schema, dict):
+                raise RuntimeError("Validated manifest cache entry is corrupt")
+            schemas[identifier] = schema
+        return schemas
+
 
 def cache_key(
     response: manifest_pb2.GetManifestResponse,

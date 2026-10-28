@@ -1,11 +1,13 @@
 """Integration tests for Agent-side SFP session establishment."""
 
 import asyncio
+import json
 import shutil
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from uuid import UUID, uuid4
 
 import grpc
@@ -38,6 +40,13 @@ from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestCacheKey,
     ManifestDeclaration,
 )
+from stateforge_agent._sfp._services.trigger_publication.client import (
+    SfpTriggerPublicationUnavailableError,
+)
+from stateforge_agent._sfp._services.trigger_publication.coordinator import (
+    TriggerPublicationCoordinator,
+    TriggerPublicationLease,
+)
 
 _PROVIDER_INSTANCE_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _DIFFERENT_PROVIDER_INSTANCE_ID = "00000000-0000-4000-8000-000000000000"
@@ -63,6 +72,34 @@ def _manifest_for(
     )
 
 
+def _trigger_manifest_for(
+    provider_instance_id: UUID = _PROVIDER_INSTANCE_ID,
+) -> ManifestDeclaration:
+    """Return a validated-shape declaration containing one trigger."""
+    document = {
+        "triggers": {
+            "example.systemd/unit.failed@1": {
+                "payloadSchema": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object",
+                    "properties": {"unit": {"type": "string"}},
+                    "required": ["unit"],
+                    "additionalProperties": False,
+                }
+            }
+        }
+    }
+    return ManifestDeclaration(
+        key=ManifestCacheKey(
+            provider_instance_id=provider_instance_id,
+            sfp_version=_SFP_VERSION,
+            schema_version=1,
+            revision=_MANIFEST_REVISION,
+        ),
+        document=json.dumps(document).encode(),
+    )
+
+
 class _StaticManifestClient:
     async def retrieve(
         self,
@@ -74,6 +111,56 @@ class _StaticManifestClient:
     ) -> ManifestDeclaration:
         del channel, sfp_version, session_id
         return _manifest_for(descriptor.provider_instance_id)
+
+
+class _TriggerManifestClient(_StaticManifestClient):
+    async def retrieve(
+        self,
+        channel,
+        descriptor: ProviderEndpointDescriptor,
+        *,
+        sfp_version: SfpVersion,
+        session_id: str,
+    ) -> ManifestDeclaration:
+        del channel, sfp_version, session_id
+        return _trigger_manifest_for(descriptor.provider_instance_id)
+
+
+class _RecordingTriggerCoordinator:
+    """Record trigger tasks and wait for session-owned cancellation."""
+
+    def __init__(self) -> None:
+        self.leases: list[TriggerPublicationLease] = []
+        self.cancelled = 0
+        self.changed = asyncio.Event()
+
+    async def run(self, lease, *, assert_current) -> None:
+        await assert_current(lease)
+        self.leases.append(lease)
+        self.changed.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            self.changed.set()
+            raise
+
+
+class _RetryingTriggerCoordinator(_RecordingTriggerCoordinator):
+    """Fail one stream attempt before retaining the replacement attempt."""
+
+    async def run(self, lease, *, assert_current) -> None:
+        await assert_current(lease)
+        self.leases.append(lease)
+        self.changed.set()
+        if len(self.leases) == 1:
+            raise SfpTriggerPublicationUnavailableError("injected disconnect")
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            self.changed.set()
+            raise
 
 
 class _BlockingManifestClient(_StaticManifestClient):
@@ -428,6 +515,7 @@ def _manager(
     manifest_client=None,
     reconnect_initial_delay_seconds: float = 0.05,
     reconnect_max_delay_seconds: float = 0.2,
+    trigger_publication: _RecordingTriggerCoordinator | None = None,
 ) -> ProviderSessionManager:
     return ProviderSessionManager(
         agent_runtime_id=uuid4(),
@@ -439,6 +527,11 @@ def _manager(
         reconnect_max_delay_seconds=reconnect_max_delay_seconds,
         descriptor_loader=descriptor_loader,
         manifest_client=manifest_client or _StaticManifestClient(),
+        trigger_publication=(
+            cast(TriggerPublicationCoordinator, trigger_publication)
+            if trigger_publication is not None
+            else None
+        ),
     )
 
 
@@ -467,6 +560,32 @@ async def _wait_for_availability(
             if status is not None and status.state is expected:
                 return
             await asyncio.sleep(0)
+
+
+async def _wait_for_trigger_runs(
+    coordinator: _RecordingTriggerCoordinator,
+    expected: int,
+) -> None:
+    """Wait for a session lifecycle transition to start trigger work."""
+    async with asyncio.timeout(3):
+        while len(coordinator.leases) < expected:
+            coordinator.changed.clear()
+            if len(coordinator.leases) >= expected:
+                return
+            await coordinator.changed.wait()
+
+
+async def _wait_for_trigger_cancellations(
+    coordinator: _RecordingTriggerCoordinator,
+    expected: int,
+) -> None:
+    """Wait for session fencing to cancel trigger work."""
+    async with asyncio.timeout(3):
+        while coordinator.cancelled < expected:
+            coordinator.changed.clear()
+            if coordinator.cancelled >= expected:
+                return
+            await coordinator.changed.wait()
 
 
 def test_rejects_invalid_session_manager_configuration() -> None:
@@ -621,6 +740,95 @@ async def test_health_watch_gates_new_operation_eligibility(
             manager,
             ProviderAvailabilityState.AVAILABLE,
         )
+    finally:
+        await manager.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_trigger_stream_follows_exact_health_and_session_lease(
+    socket_directory: Path,
+) -> None:
+    coordinator = _RecordingTriggerCoordinator()
+    server = _BootstrapServer(
+        socket_directory,
+        endpoint_generation=1,
+        health_status=health_pb2.HealthCheckResponse.SERVING,
+    )
+    manager = _manager(
+        manifest_client=_TriggerManifestClient(),
+        trigger_publication=coordinator,
+    )
+    await server.start()
+    try:
+        session = await manager.establish(server.descriptor)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+        await _wait_for_trigger_runs(coordinator, 1)
+        first = coordinator.leases[0]
+        assert first.session_token is session
+        assert first.endpoint_generation == session.endpoint_generation
+        assert first.manifest_revision == session.manifest.key.revision
+
+        server.health_servicer.publish(
+            health_pb2.HealthCheckResponse.NOT_SERVING
+        )
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.NOT_SERVING,
+        )
+        await _wait_for_trigger_cancellations(coordinator, 1)
+
+        server.health_servicer.publish(health_pb2.HealthCheckResponse.SERVING)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+        await _wait_for_trigger_runs(coordinator, 2)
+        assert coordinator.leases[1].availability_generation != (
+            first.availability_generation
+        )
+
+        await manager.remove(_PROVIDER_INSTANCE_ID)
+        await _wait_for_trigger_cancellations(coordinator, 2)
+    finally:
+        await manager.close()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_trigger_stream_retries_transport_loss_and_stops_on_shutdown(
+    socket_directory: Path,
+) -> None:
+    coordinator = _RetryingTriggerCoordinator()
+    server = _BootstrapServer(
+        socket_directory,
+        endpoint_generation=1,
+        health_status=health_pb2.HealthCheckResponse.SERVING,
+    )
+    manager = _manager(
+        manifest_client=_TriggerManifestClient(),
+        trigger_publication=coordinator,
+        reconnect_initial_delay_seconds=0.01,
+        reconnect_max_delay_seconds=0.01,
+    )
+    await server.start()
+    try:
+        await manager.establish(server.descriptor)
+        await _wait_for_availability(
+            manager,
+            ProviderAvailabilityState.AVAILABLE,
+        )
+        await _wait_for_trigger_runs(coordinator, 2)
+
+        first, retried = coordinator.leases
+        assert retried.session_token is first.session_token
+        assert retried.availability_generation == first.availability_generation
+
+        await manager.close()
+        await _wait_for_trigger_cancellations(coordinator, 1)
     finally:
         await manager.close()
         await server.stop()
