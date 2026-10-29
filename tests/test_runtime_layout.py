@@ -14,9 +14,6 @@ def test_derives_agent_owned_paths_from_platform_directories() -> None:
     assert layout.staging_directory == Path(
         "/var/lib/stateforge-agent/staging"
     )
-    assert layout.journal_path == Path(
-        "/var/lib/stateforge-agent/journal/agent.db"
-    )
     assert layout.control_socket_path == Path(
         "/run/stateforge-agent/control.sock"
     )

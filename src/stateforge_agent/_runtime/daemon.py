@@ -14,6 +14,7 @@ from stateforge_protocol.sfp.endpoint_discovery.v1 import (
 
 from stateforge_agent import __version__
 from stateforge_agent._config.models import AgentConfiguration
+from stateforge_agent._journal import JournalError, create_journal
 from stateforge_agent._process import ProcessExitCode
 from stateforge_agent._runtime.layout import (
     SYSTEM_RUNTIME_LAYOUT,
@@ -37,6 +38,9 @@ from stateforge_agent._sfp._runtime.discovery import (
     ProviderDirectoryEvent,
     ProviderDirectoryEventKind,
     ProviderDirectoryMonitor,
+)
+from stateforge_agent._sfp._services.trigger_publication.coordinator import (
+    TriggerPublicationCoordinator,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,6 +71,23 @@ async def _run_agent(
     monitor = ProviderDirectoryMonitor(
         runtime_layout.provider_discovery_directory
     )
+    journal = create_journal(
+        configuration.journal,
+        state_directory=runtime_layout.state_directory,
+    )
+    trigger_store = journal.trigger_publications(
+        maximum_pending_publications=(
+            configuration.journal.maximum_pending_trigger_publications
+        ),
+    )
+    try:
+        await journal.open()
+        await trigger_store.initialize()
+    except JournalError:
+        _LOGGER.exception("Agent journal initialization failed")
+        for installed_signal in installed_signals:
+            loop.remove_signal_handler(installed_signal)
+        return ProcessExitCode.RUNTIME_FAILURE
 
     def reload_provider_descriptor(
         provider_instance_id: UUID,
@@ -92,6 +113,12 @@ async def _run_agent(
             configuration.providers.health_interval_seconds
         ),
         descriptor_loader=reload_provider_descriptor,
+        trigger_publication=TriggerPublicationCoordinator(
+            trigger_store,
+            maximum_in_flight_publications=(
+                configuration.providers.trigger_max_in_flight_publications
+            ),
+        ),
     )
 
     try:
@@ -104,6 +131,7 @@ async def _run_agent(
         return ProcessExitCode.RUNTIME_FAILURE
     finally:
         await sessions.close()
+        await journal.close()
         for installed_signal in installed_signals:
             loop.remove_signal_handler(installed_signal)
 

@@ -139,6 +139,22 @@ def test_packaged_service_restarts_only_recoverable_runtime_failures() -> None:
     assert "RestartPreventExitStatus=2" in service
 
 
+def test_rpm_declares_private_persistent_journal_directory() -> None:
+    """Create the Agent journal with explicit package-owned permissions."""
+    service = read(
+        ROOT / "packaging" / "rpm" / "SOURCES" / "stateforge-agent.service"
+    )
+    tmpfiles = read(
+        ROOT / "packaging" / "rpm" / "SOURCES" / "stateforge-agent.tmpfiles"
+    )
+
+    assert "StateDirectory=stateforge-agent" in service
+    assert (
+        "d      /var/lib/stateforge-agent/journal 0700 "
+        "stateforge-agent stateforge-agent"
+    ) in tmpfiles
+
+
 def test_installed_test_consumes_rpm_and_packaged_provider_wheels() -> None:
     """Exercise the built RPM against an independently packaged Provider."""
     workflow = read(WORKFLOWS / "rpm-installed-test.yml")
@@ -419,6 +435,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "agent/assert-availability",
         "agent/assert-capability-boundary",
         "agent/assert-capability-assessment",
+        "agent/assert-trigger-publication",
         "agent/collect-evidence",
         "agent/install",
         "agent/start",
@@ -438,6 +455,8 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "rpm/test-installed/lifecycle/multiple-providers",
         "rpm/test-installed/setup",
         "rpm/test-installed/smoke/manifest-exchange",
+        "rpm/test-installed/triggers/publication",
+        "rpm/test-installed/triggers/storage-failure",
     }
     observed = {
         str(path.parent.relative_to(ACTIONS))
@@ -493,6 +512,7 @@ def test_each_installed_scenario_is_an_independent_action() -> None:
         "adversarial",
         "capability",
         "destructive",
+        "triggers",
     }
     for scenario in scenarios:
         content = read(scenario)
@@ -613,3 +633,83 @@ def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (
     assert "session_id" in boundary_assertion
     assert "endpoint_generation" in boundary_assertion
     assert "manifest_revision" in boundary_assertion
+
+
+def test_installed_trigger_scenario_uses_public_api_and_journal() -> None:
+    """Keep A4 evidence on exact packages and the durable Agent boundary."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario = read(
+        ACTIONS
+        / "rpm"
+        / "test-installed"
+        / "triggers"
+        / "publication"
+        / "action.yml"
+    )
+    assertion_action = read(
+        ACTIONS / "agent" / "assert-trigger-publication" / "action.yml"
+    )
+    assertion = read(
+        ACTIONS / "agent" / "assert-trigger-publication" / "assert.py"
+    )
+    fixture = read(
+        ACTIONS / "provider" / "create-fixture" / "fixtures" / "manifest.py"
+    )
+
+    assert "trigger-publication" in workflow
+    assert "./.github/actions/rpm/test-installed/setup" in scenario
+    assert "./.github/actions/provider/start" in scenario
+    assert "./.github/actions/agent/assert-trigger-publication" in scenario
+    assert "systemctl stop stateforge-agent.service" in scenario
+    assert "./.github/actions/agent/start" in scenario
+    assert "before-agent-restart" in scenario
+    assert "after-agent-restart" in scenario
+    assert "after-callback" in scenario
+    assert "drop-trigger-acks-until-restart" in scenario
+    assert "accepted_duplicate" in scenario
+    assert "provider-replay-outcome.txt" in scenario
+    assert "content_fingerprint" in scenario
+    assert "systemctl kill --kill-whom=main --signal=SIGKILL" in scenario
+    assert "first-trigger-publication-id" in scenario
+    assert "isolation-provider-a" in scenario
+    assert "isolation-provider-b" in scenario
+    assert "PROVIDER_A_INSTANCE_ID" in scenario
+    assert "PROVIDER_B_INSTANCE_ID" in scenario
+    assert "isolation-provider-b-after-a-disconnect" in scenario
+    assert "isolation-provider-a-after-disconnect" in scenario
+    assert "isolation-provider-b-outcome.txt" in scenario
+    assert "stateforge.test/runtime.started@1" in scenario
+    assert "stateforge.test/runtime.refreshed@1" in scenario
+    assert "@trigger(" in fixture
+    assert "publish_trigger(" in fixture
+    assert "/usr/bin/python3" in assertion_action
+    assert "mode=ro" in assertion
+    assert "validate_trigger_publication" in assertion
+    assert "compute_publication_content_fingerprint" in assertion
+    assert 'row["forwarding_state"] != "pending"' in assertion
+
+
+def test_installed_trigger_storage_failure_recovers_without_false_ack() -> (
+    None
+):
+    """Exercise a real journal write denial before retrying one event."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario = read(
+        ACTIONS
+        / "rpm"
+        / "test-installed"
+        / "triggers"
+        / "storage-failure"
+        / "action.yml"
+    )
+
+    assert "trigger-storage-failure" in workflow
+    assert "./.github/actions/rpm/test-installed/setup" in scenario
+    assert "./.github/actions/provider/start" in scenario
+    assert "chmod u-w" in scenario
+    assert "during-storage-failure" in scenario
+    assert "chmod u+w" in scenario
+    assert "after-storage-recovery" in scenario
+    assert "Provider received a terminal ACK while storage failed" in scenario
+    assert "stateforge.test/runtime.refreshed@1" in scenario
+    assert "./.github/actions/rpm/test-installed/cleanup" in scenario

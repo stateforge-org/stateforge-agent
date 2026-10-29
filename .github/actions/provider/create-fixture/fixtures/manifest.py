@@ -7,11 +7,16 @@ import contextlib
 import hashlib
 import os
 import signal
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from uuid import UUID
 
 import grpc
 from stateforge_protocol.sfp.capability_assessment.v1 import (
     capability_assessment_pb2,
+)
+from stateforge_protocol.sfp.trigger_publication.v1 import (
+    trigger_publication_pb2,
 )
 from stateforge_provider import (
     HealthStatus,
@@ -19,11 +24,20 @@ from stateforge_provider import (
     Provider,
     ProviderModel,
     RequirementCheckResult,
+    Trigger,
     operation,
     requirement_check,
+    trigger,
 )
 from stateforge_provider._services.capability_assessment.service import (
     CapabilityAssessmentService,
+)
+from stateforge_provider._services.trigger_publication import (
+    runtime as trigger_publication_runtime,
+)
+from stateforge_provider._services.trigger_publication.runtime import (
+    TriggerPublicationRuntime,
+    TriggerStreamLease,
 )
 
 _CAPABILITY_ATTEMPT_PREFIX = "rpc:capability-assessment:"
@@ -47,6 +61,19 @@ class FixtureResult(ProviderModel):
     value: str
 
 
+class FixtureTriggerPayload(ProviderModel):
+    """Describe one deterministic runtime event for installed tests."""
+
+    sequence: int
+    source: str
+
+
+_RUNTIME_REFRESHED = Trigger(
+    "stateforge.test/runtime.refreshed@1",
+    FixtureTriggerPayload,
+)
+
+
 class ManifestFixtureProvider(Provider):
     """Expose a valid manifest and deterministic public Health controls."""
 
@@ -57,6 +84,7 @@ class ManifestFixtureProvider(Provider):
     )
     version = "1.0.0"
     platforms = (Platform("linux", os.uname().machine),)
+    triggers = (_RUNTIME_REFRESHED,)
 
     def __init__(
         self,
@@ -72,6 +100,10 @@ class ManifestFixtureProvider(Provider):
         self._health_status = HealthStatus.healthy()
         self._fail_health = False
         self._health_tasks: set[asyncio.Task[None]] = set()
+        self._trigger_tasks: set[asyncio.Task[None]] = set()
+        self._startup_events: asyncio.Queue[FixtureTriggerPayload] = (
+            asyncio.Queue()
+        )
         self._event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
         self._target_path = Path(os.environ["STATEFORGE_TEST_TARGET_PATH"])
 
@@ -96,15 +128,26 @@ class ManifestFixtureProvider(Provider):
             HealthStatus.not_serving(),
             True,
         )
+        loop.add_signal_handler(signal.SIGALRM, self._schedule_trigger)
+        self._startup_events.put_nowait(
+            FixtureTriggerPayload(sequence=1, source="decorated")
+        )
 
     async def on_shutdown(self) -> None:
         """Remove fixture signal handlers and finish scheduled refreshes."""
         loop = asyncio.get_running_loop()
-        for signal_number in (signal.SIGUSR1, signal.SIGUSR2, signal.SIGHUP):
+        for signal_number in (
+            signal.SIGUSR1,
+            signal.SIGUSR2,
+            signal.SIGHUP,
+            signal.SIGALRM,
+        ):
             with contextlib.suppress(NotImplementedError, ValueError):
                 loop.remove_signal_handler(signal_number)
         if self._health_tasks:
             await asyncio.gather(*self._health_tasks, return_exceptions=True)
+        if self._trigger_tasks:
+            await asyncio.gather(*self._trigger_tasks, return_exceptions=True)
 
     async def health(self) -> HealthStatus:
         """Return the scenario-controlled Provider-wide status."""
@@ -178,6 +221,30 @@ class ManifestFixtureProvider(Provider):
         self._record("operation:indeterminate")
         return FixtureResult(value=request.value)
 
+    @trigger("stateforge.test/runtime.started@1")
+    async def runtime_started(self) -> AsyncIterator[FixtureTriggerPayload]:
+        """Publish one event through the decorated public Provider API."""
+        yield await self._startup_events.get()
+
+    def _schedule_trigger(self) -> None:
+        """Schedule callback publication from a process signal."""
+        self._record(f"trigger-scheduled:{_RUNTIME_REFRESHED.identifier}")
+        task = asyncio.create_task(self._publish_callback_trigger())
+        self._trigger_tasks.add(task)
+        task.add_done_callback(self._trigger_tasks.discard)
+
+    async def _publish_callback_trigger(self) -> None:
+        """Publish and record one callback-driven terminal outcome."""
+        receipt = await self.publish_trigger(
+            _RUNTIME_REFRESHED,
+            FixtureTriggerPayload(sequence=2, source="callback"),
+        )
+        outcome = await receipt.outcome()
+        self._record(
+            "trigger-outcome:"
+            f"{outcome.publication_id}:{outcome.disposition.value}"
+        )
+
     def _record(self, event: str) -> None:
         """Record fixture-only evidence outside the inspected target."""
         with self._event_log.open("a", encoding="utf-8") as stream:
@@ -238,9 +305,80 @@ def _install_capability_unavailable_once() -> None:
     CapabilityAssessmentService.AssessCapabilities = assess_capabilities
 
 
+def _install_trigger_acknowledgement_observer() -> None:
+    """Record terminal acknowledgements and optionally discard them."""
+    drop_acknowledgements = (
+        os.environ.get("STATEFORGE_TEST_DROP_TRIGGER_ACKS", "false") == "true"
+    )
+    original = TriggerPublicationRuntime.acknowledge
+    marker = Path(os.environ["STATEFORGE_TEST_TRIGGER_ACK_MARKER"])
+    event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
+
+    async def acknowledge(
+        runtime: TriggerPublicationRuntime,
+        lease: TriggerStreamLease,
+        acknowledgement: trigger_publication_pb2.TriggerAcknowledgement,
+        *,
+        is_session_current: Callable[[str], bool],
+    ) -> None:
+        disposition = (
+            trigger_publication_pb2.TriggerAcknowledgementDisposition.Name(
+                acknowledgement.disposition
+            )
+            .removeprefix("TRIGGER_ACKNOWLEDGEMENT_DISPOSITION_")
+            .lower()
+        )
+        if drop_acknowledgements and not await asyncio.to_thread(
+            marker.exists
+        ):
+            _record_event(
+                event_log,
+                "trigger-ack-dropped:"
+                f"{acknowledgement.publication_id}:{disposition}",
+            )
+            return
+        await original(
+            runtime,
+            lease,
+            acknowledgement,
+            is_session_current=is_session_current,
+        )
+        _record_event(
+            event_log,
+            "trigger-ack-observed:"
+            f"{acknowledgement.publication_id}:{disposition}",
+        )
+
+    TriggerPublicationRuntime.acknowledge = acknowledge
+
+
+def _install_first_trigger_publication_id() -> None:
+    """Force only the first fixture publication to a deterministic UUID."""
+    configured = os.environ.get(
+        "STATEFORGE_TEST_FIRST_TRIGGER_PUBLICATION_ID",
+        "",
+    )
+    if not configured:
+        return
+    first_publication_id = UUID(configured)
+    original = trigger_publication_runtime.uuid4
+    pending = True
+
+    def next_publication_id() -> UUID:
+        nonlocal pending
+        if pending:
+            pending = False
+            return first_publication_id
+        return original()
+
+    trigger_publication_runtime.uuid4 = next_publication_id
+
+
 def main() -> None:
     """Run the Provider fixture until its service manager stops it."""
     _install_capability_unavailable_once()
+    _install_trigger_acknowledgement_observer()
+    _install_first_trigger_publication_id()
     ManifestFixtureProvider(
         discovery_directory=Path(
             os.environ["STATEFORGE_TEST_DISCOVERY_DIRECTORY"]

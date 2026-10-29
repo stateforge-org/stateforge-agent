@@ -98,6 +98,21 @@ new-work eligibility; it neither cancels nor invents outcomes for work already
 admitted. Provider availability transitions and sanitized reasons are written
 to the local Agent journal for diagnostics and later internal consumers.
 
+## Trigger acceptance
+
+Once a Provider is operationally eligible, the Agent opens its Trigger
+Publication stream on the existing SFP channel. Incoming events must satisfy
+the canonical Protocol contract, belong to the accepted manifest, and match
+the declared payload schema. The Agent commits accepted content to its durable
+journal before acknowledging the Provider. Exact replays receive a duplicate
+acceptance; publication-ID reuse with different content is rejected.
+
+Health loss, endpoint replacement, descriptor removal, and channel failure
+cancel the current trigger consumer. A stale stream cannot commit against a
+new session or availability generation. Accepted records survive Agent restart
+and remain bounded by `journal.maximum_pending_trigger_publications` while
+they await the future SF-AOP forwarding implementation.
+
 The packaged service owns the Agent filesystem layout. Persistent state is
 stored below `/var/lib/stateforge-agent`, and volatile runtime files are stored
 below `/run/stateforge-agent`. These locations are deliberately not

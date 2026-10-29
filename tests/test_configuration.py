@@ -25,9 +25,11 @@ request_timeout_seconds = 30
 health_interval_seconds = 15
 reconnect_initial_delay_seconds = 1
 reconnect_max_delay_seconds = 30
+trigger_max_in_flight_publications = 32
 
 [journal]
 backend = "sqlite"
+maximum_pending_trigger_publications = 10000
 
 [logging]
 level = "info"
@@ -39,6 +41,8 @@ _FINAL_HEALTH_INTERVAL = 45
 _SUCCESS_EXIT_CODE = 0
 _RUNTIME_FAILURE_EXIT_CODE = 1
 _INVALID_INPUT_EXIT_CODE = 2
+_TRIGGER_RECEIVE_WINDOW = 32
+_TRIGGER_PENDING_CAPACITY = 10_000
 
 
 def test_process_exit_codes_are_stable() -> None:
@@ -63,6 +67,14 @@ def test_loads_complete_configuration(tmp_path: Path) -> None:
         "https://control.stateforge.example"
     )
     assert loaded.config.journal.backend == "sqlite"
+    assert (
+        loaded.config.providers.trigger_max_in_flight_publications
+        == _TRIGGER_RECEIVE_WINDOW
+    )
+    assert (
+        loaded.config.journal.maximum_pending_trigger_publications
+        == _TRIGGER_PENDING_CAPACITY
+    )
     assert loaded.sources == (config_path,)
     assert loaded.fingerprint.startswith("sha256:")
 
@@ -133,6 +145,11 @@ def test_rejects_unknown_key_with_defining_source(tmp_path: Path) -> None:
             'ca_certificate = "/etc/pki/tls/certs/ca-bundle.crt"',
             'ca_certificate = "etc/pki/tls/certs/ca-bundle.crt"',
             "must be an absolute path",
+        ),
+        (
+            'backend = "sqlite"',
+            'backend = "unknown"',
+            "must be one of: sqlite",
         ),
     ],
 )

@@ -24,6 +24,8 @@ operation.
 │   │       │   └── multiple-providers/
 │   │       ├── health/
 │   │       │   └── provider-availability/
+│   │       ├── triggers/
+│   │       │   └── publication/
 │   │       ├── adversarial/
 │   │       │   └── invalid-descriptor/
 │   │       └── destructive/
@@ -31,6 +33,7 @@ operation.
 │   ├── agent/
 │   │   ├── assert-availability/
 │   │   ├── assert-capability-assessment/
+│   │   ├── assert-trigger-publication/
 │   │   ├── install/
 │   │   ├── start/
 │   │   └── collect-evidence/
@@ -116,7 +119,7 @@ Contents permission. The token is scoped to those two repositories, is not
 persisted by checkout, and expires automatically. A long-lived personal
 access token is neither required nor accepted by the workflow interface.
 
-The installed-system workflow currently runs ten isolated scenarios:
+The installed-system workflow currently runs eleven isolated scenarios:
 
 - smoke: one public-API Provider completes manifest exchange;
 - capability: the RPM-installed Agent retries one deterministic transient
@@ -131,6 +134,9 @@ The installed-system workflow currently runs ten isolated scenarios:
 - lifecycle: two independent Provider processes are accepted concurrently;
 - health: real Providers drive initial replay, loss, recovery, concurrent
   Watch streams, shutdown, and same-installation generation replacement;
+- triggers: a real Provider wheel publishes through both the decorated and
+  callback author APIs; the installed Agent validates and journals the events,
+  survives an Agent service restart, and returns a terminal acknowledgement;
 - adversarial: malformed discovery data is rejected without stopping the Agent;
 - destructive: the exact RPM is removed, installed again in a clean environment,
   and completes manifest exchange after reinstallation.
@@ -155,6 +161,7 @@ digest of each generated wheel.
 | `agent/assert-availability` | Assert an exact Provider generation reached a local eligibility state. |
 | `agent/assert-capability-assessment` | Use the RPM-installed Agent package to collect and verify normalized evidence from a separate real Provider process. |
 | `agent/assert-capability-boundary` | Exercise timeout, malformed response, stale response-fence, and byte-limit behavior through the RPM-installed client. |
+| `agent/assert-trigger-publication` | Validate canonical, durable Provider publication evidence in the installed Agent journal. |
 | `agent/collect-evidence` | Capture bounded evidence, uninstall the RPM, and clean up. |
 | `provider/create-fixture` | Invoke the selected Protocol and Provider checkouts' canonical package-build actions and stage their wheels with a selected fixture. |
 | `provider/start` | Run the fixture as a separate non-root systemd service. |
@@ -191,8 +198,8 @@ assertions that distinguish that case. The reusable workflow gives every
 scenario its own job and clean container, so one failure cannot contaminate a
 later scenario.
 
-Use one of the `smoke`, `capability`, `lifecycle`, `health`, `adversarial`, or
-`destructive` tiers. A scenario action must always invoke cleanup with
+Use one of the `smoke`, `capability`, `lifecycle`, `health`, `triggers`,
+`adversarial`, or `destructive` tiers. A scenario action must always invoke cleanup with
 `always()` so failure
 evidence is retained. Adding a normal scenario requires one action and one thin
 workflow job; it must not duplicate RPM installation, systemd readiness,

@@ -13,7 +13,7 @@ LogLevel: TypeAlias = Literal[
 ]
 LogFormat: TypeAlias = Literal["text", "json"]
 LogDestination: TypeAlias = Literal["stderr"]
-JournalBackend: TypeAlias = Literal["sqlite"]
+JournalBackendName: TypeAlias = str
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,13 +33,15 @@ class ProviderConfiguration:
     health_interval_seconds: int
     reconnect_initial_delay_seconds: int
     reconnect_max_delay_seconds: int
+    trigger_max_in_flight_publications: int
 
 
 @dataclass(frozen=True, slots=True)
 class JournalConfiguration:
     """Durable Agent journal settings."""
 
-    backend: JournalBackend
+    backend: JournalBackendName
+    maximum_pending_trigger_publications: int
 
 
 @dataclass(frozen=True, slots=True)

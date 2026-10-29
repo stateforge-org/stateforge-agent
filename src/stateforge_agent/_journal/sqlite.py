@@ -1,0 +1,165 @@
+"""Run serialized SQLite journal transactions outside the event loop."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sqlite3
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Self, TypeVar
+
+from stateforge_agent._journal.base import Journal, JournalError
+from stateforge_agent._journal.sqlite_trigger_publications import (
+    SqliteTriggerPublicationStore,
+)
+from stateforge_agent._sfp._services.trigger_publication.store import (
+    TriggerPublicationStore,
+)
+
+if TYPE_CHECKING:
+    from stateforge_agent._config.models import JournalConfiguration
+
+_Result = TypeVar("_Result")
+_BUSY_TIMEOUT_MILLISECONDS = 5000
+_JOURNAL_DIRECTORY_MODE = 0o700
+_JOURNAL_FILE_MODE = 0o600
+
+
+class SqliteJournalError(JournalError):
+    """Report that the Agent journal could not complete an operation."""
+
+
+class SqliteJournal(Journal):
+    """Own one bounded SQLite transaction boundary for Agent state."""
+
+    backend = "sqlite"
+
+    @classmethod
+    def from_configuration(
+        cls,
+        configuration: JournalConfiguration,
+        *,
+        state_directory: Path,
+    ) -> Self:
+        """Construct SQLite storage under the Agent-owned state directory."""
+        del configuration
+        return cls(cls.database_path(state_directory))
+
+    @staticmethod
+    def database_path(state_directory: Path) -> Path:
+        """Return SQLite's backend-specific database path."""
+        return state_directory / "journal" / "agent.db"
+
+    def __init__(self, path: Path) -> None:
+        """Bind the journal to its platform-owned persistent path."""
+        self._path = path
+        self._lock = asyncio.Lock()
+        self._opened = False
+
+    @property
+    def path(self) -> Path:
+        """Return the platform-owned database path."""
+        return self._path
+
+    async def open(self) -> None:
+        """Create and configure the journal without replacing existing data."""
+        async with self._lock:
+            if self._opened:
+                return
+            try:
+                await asyncio.to_thread(self._prepare)
+            except (OSError, sqlite3.Error) as error:
+                raise SqliteJournalError(
+                    "Agent journal could not be opened"
+                ) from error
+            self._opened = True
+
+    async def transaction(
+        self,
+        operation: Callable[[sqlite3.Connection], _Result],
+    ) -> _Result:
+        """Run one immediate transaction with serialized local access."""
+        async with self._lock:
+            if not self._opened:
+                raise SqliteJournalError("Agent journal is not open")
+            try:
+                return await asyncio.to_thread(self._transact, operation)
+            except (OSError, sqlite3.Error) as error:
+                raise SqliteJournalError(
+                    "Agent journal transaction failed"
+                ) from error
+
+    async def close(self) -> None:
+        """Reject future transactions after current work has finished."""
+        async with self._lock:
+            self._opened = False
+
+    def trigger_publications(
+        self,
+        *,
+        maximum_pending_publications: int,
+    ) -> TriggerPublicationStore:
+        """Create the SQLite Trigger Publication adapter."""
+        return SqliteTriggerPublicationStore(
+            self,
+            maximum_pending_publications=maximum_pending_publications,
+        )
+
+    def _prepare(self) -> None:
+        """Prepare the directory and durable SQLite mode synchronously."""
+        self._path.parent.mkdir(
+            mode=_JOURNAL_DIRECTORY_MODE,
+            parents=True,
+            exist_ok=True,
+        )
+        self._secure_database_file()
+        connection = self._connect()
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+        finally:
+            connection.close()
+
+    def _secure_database_file(self) -> None:
+        """Create or restrict the database before SQLite creates sidecars."""
+        try:
+            descriptor = os.open(
+                self._path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                _JOURNAL_FILE_MODE,
+            )
+        except FileExistsError:
+            os.chmod(self._path, _JOURNAL_FILE_MODE)
+        else:
+            os.close(descriptor)
+
+    def _transact(
+        self,
+        operation: Callable[[sqlite3.Connection], _Result],
+    ) -> _Result:
+        """Execute and durably commit one synchronous transaction."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            result = operation(connection)
+            connection.commit()
+            return result
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        """Open one fully configured local connection."""
+        connection = sqlite3.connect(
+            self._path,
+            timeout=_BUSY_TIMEOUT_MILLISECONDS / 1000,
+            isolation_level=None,
+        )
+        connection.execute(
+            f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MILLISECONDS}"
+        )
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA synchronous = FULL")
+        return connection

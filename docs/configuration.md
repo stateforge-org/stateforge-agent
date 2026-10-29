@@ -31,9 +31,11 @@ request_timeout_seconds = 30
 health_interval_seconds = 15
 reconnect_initial_delay_seconds = 1
 reconnect_max_delay_seconds = 30
+trigger_max_in_flight_publications = 32
 
 [journal]
 backend = "sqlite"
+maximum_pending_trigger_publications = 10000
 
 [logging]
 level = "info"
@@ -106,6 +108,7 @@ does not check whether the referenced file exists during `check-config`.
 | `health_interval_seconds` | Integer | `15` | Maximum bounded delay before reopening a failed Provider Health Watch. Must be greater than zero. The Agent does not poll healthy Providers. |
 | `reconnect_initial_delay_seconds` | Integer | `1` | Initial bounded-backoff delay after a failed Provider connection. Must be greater than zero. |
 | `reconnect_max_delay_seconds` | Integer | `30` | Maximum reconnect delay. Must be greater than zero and greater than or equal to the initial delay. |
+| `trigger_max_in_flight_publications` | Integer | `32` | Requested SFP Trigger Publication receive window. Must be between 1 and the Protocol-owned maximum of 1,024. |
 
 The RPM creates the Provider discovery directory through `systemd-tmpfiles`.
 Provider processes publish their endpoint descriptors and Unix domain sockets
@@ -115,10 +118,15 @@ there; the Agent does not use this directory for Provider-specific data.
 
 | Field | Type | Packaged value | Validation and purpose |
 | --- | --- | --- | --- |
-| `backend` | String | `sqlite` | Durable journal backend. `sqlite` is the only value supported by schema version 1. |
+| `backend` | String | `sqlite` | Selects the durable journal implementation. `sqlite` selects the bundled SQLite implementation and is the only backend shipped in schema version 1. |
+| `maximum_pending_trigger_publications` | Integer | `10000` | Maximum accepted trigger publications retained for later SF-AOP forwarding. Must be greater than zero. When full, new publications receive a retryable capacity rejection. |
 
 The journal database is stored at the package-owned path
 `/var/lib/stateforge-agent/journal/agent.db`.
+
+Journal implementations conform to storage-neutral Agent contracts. Runtime
+services do not depend on SQLite classes or SQL; another backend can supply its
+own journal and durable service stores under a different backend name.
 
 The selected Backup Engine does not belong in this section. Backup Engines are
 operation tools selected through Control Plane policy rather than global Agent
