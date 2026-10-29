@@ -1,3 +1,5 @@
 # Type Path                              Mode User             Group                 Age Argument
+d      /var/lib/stateforge-agent         0750 stateforge-agent stateforge-agent       -   -
+d      /var/lib/stateforge-agent/journal 0700 stateforge-agent stateforge-agent       -   -
 d      /run/stateforge-agent             0750 stateforge-agent stateforge-providers  -   -
 d      /run/stateforge-agent/providers   3770 stateforge-agent stateforge-providers  -   -

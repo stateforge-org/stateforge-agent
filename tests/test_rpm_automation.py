@@ -139,6 +139,22 @@ def test_packaged_service_restarts_only_recoverable_runtime_failures() -> None:
     assert "RestartPreventExitStatus=2" in service
 
 
+def test_rpm_declares_private_persistent_journal_directory() -> None:
+    """Create the Agent journal with explicit package-owned permissions."""
+    service = read(
+        ROOT / "packaging" / "rpm" / "SOURCES" / "stateforge-agent.service"
+    )
+    tmpfiles = read(
+        ROOT / "packaging" / "rpm" / "SOURCES" / "stateforge-agent.tmpfiles"
+    )
+
+    assert "StateDirectory=stateforge-agent" in service
+    assert (
+        "d      /var/lib/stateforge-agent/journal 0700 "
+        "stateforge-agent stateforge-agent"
+    ) in tmpfiles
+
+
 def test_installed_test_consumes_rpm_and_packaged_provider_wheels() -> None:
     """Exercise the built RPM against an independently packaged Provider."""
     workflow = read(WORKFLOWS / "rpm-installed-test.yml")

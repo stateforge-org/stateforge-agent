@@ -13,6 +13,7 @@ from stateforge_agent._journal import sqlite as sqlite_journal
 
 _LARGE_PAYLOAD_BYTES = 1024 * 1024
 _SHORT_BUSY_TIMEOUT_MILLISECONDS = 1
+_OWNER_ONLY_DIRECTORY_MODE = 0o700
 _OWNER_ONLY_FILE_MODE = 0o600
 
 
@@ -48,6 +49,7 @@ async def test_open_creates_owner_only_journal(tmp_path: Path) -> None:
 
     await journal.open()
 
+    assert _file_mode(path.parent) == _OWNER_ONLY_DIRECTORY_MODE
     assert _file_mode(path) == _OWNER_ONLY_FILE_MODE
     assert await journal.transaction(
         lambda _: (

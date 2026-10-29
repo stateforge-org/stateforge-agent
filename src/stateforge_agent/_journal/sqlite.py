@@ -11,6 +11,7 @@ from typing import TypeVar
 
 _Result = TypeVar("_Result")
 _BUSY_TIMEOUT_MILLISECONDS = 5000
+_JOURNAL_DIRECTORY_MODE = 0o700
 _JOURNAL_FILE_MODE = 0o600
 
 
@@ -67,7 +68,11 @@ class SqliteJournal:
 
     def _prepare(self) -> None:
         """Prepare the directory and durable SQLite mode synchronously."""
-        self._path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+        self._path.parent.mkdir(
+            mode=_JOURNAL_DIRECTORY_MODE,
+            parents=True,
+            exist_ok=True,
+        )
         self._secure_database_file()
         connection = self._connect()
         try:
