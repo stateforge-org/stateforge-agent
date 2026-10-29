@@ -20,24 +20,33 @@ from stateforge_protocol.sfp.trigger_publication.v1 import (
 
 from stateforge_agent._journal import SqliteJournal
 from stateforge_agent._sfp._services.trigger_publication.client import (
+    SfpTriggerPublicationError,
     SfpTriggerPublicationLimitError,
+    SfpTriggerPublicationProtocolError,
     SfpTriggerPublicationStaleError,
     SfpTriggerPublicationUnavailableError,
     TriggerPublicationClient,
     TriggerPublicationHandler,
     TriggerStreamBinding,
+    _consume_publications,
+    _DecodedTriggerResponse,
+    _raise_rpc_error,
 )
 from stateforge_agent._sfp._services.trigger_publication.coordinator import (
     TriggerPublicationCoordinator,
     TriggerPublicationLease,
 )
 from stateforge_agent._sfp._services.trigger_publication.store import (
+    TriggerAcceptanceContext,
+    TriggerAcceptanceDecision,
     TriggerPublicationStore,
 )
 
 _TRIGGER_IDENTIFIER = "example.systemd/unit.failed@1"
 _STALE_BEFORE_DURABLE_COMMIT = 2
 _STALE_AFTER_DURABLE_COMMIT = 3
+_SELECTED_RECEIVE_WINDOW = 2
+_ISOLATED_PROVIDER_COUNT = 2
 _TRIGGER_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -87,8 +96,127 @@ class _TriggerPeer(
         self.requests.append(await anext(request_iterator))
 
 
+class _ReadyScenarioPeer(
+    trigger_publication_pb2_grpc.TriggerPublicationServiceServicer
+):
+    """Return one deliberately invalid stream-opening sequence."""
+
+    def __init__(self, scenario: str) -> None:
+        self.scenario = scenario
+
+    async def StreamTriggers(  # noqa: N802
+        self,
+        request_iterator: AsyncIterator[
+            trigger_publication_pb2.StreamTriggersRequest
+        ],
+        context,
+    ) -> AsyncIterator[trigger_publication_pb2.StreamTriggersResponse]:
+        del context
+        opening = await anext(request_iterator)
+        if self.scenario == "eof-before-ready":
+            return
+        if self.scenario == "publication-before-ready":
+            yield trigger_publication_pb2.StreamTriggersResponse(
+                publication=_publication()
+            )
+            return
+
+        binding = opening.open.session_binding
+        ready = trigger_publication_pb2.TriggerStreamReady(
+            provider_instance_id=binding.expected_provider_instance_id,
+            endpoint_generation=binding.expected_endpoint_generation,
+            session_id=binding.expected_session_id,
+            manifest_revision=binding.expected_manifest_revision,
+            maximum_in_flight_publications=(
+                opening.open.requested_max_in_flight_publications
+            ),
+        )
+        if self.scenario == "mismatched-ready":
+            ready.session_id = "different-session"
+        elif self.scenario == "zero-window":
+            ready.maximum_in_flight_publications = 0
+        elif self.scenario == "larger-window":
+            ready.maximum_in_flight_publications += 1
+        yield trigger_publication_pb2.StreamTriggersResponse(ready=ready)
+        if self.scenario == "duplicate-ready":
+            yield trigger_publication_pb2.StreamTriggersResponse(ready=ready)
+
+
+class _WindowPeer(
+    trigger_publication_pb2_grpc.TriggerPublicationServiceServicer
+):
+    """Publish a fixed burst and retain acknowledgements for assertions."""
+
+    def __init__(self, publication_count: int, *, window: int) -> None:
+        self.publications = [_publication() for _ in range(publication_count)]
+        self.window = window
+        self.acknowledgements: list[
+            trigger_publication_pb2.TriggerAcknowledgement
+        ] = []
+
+    async def StreamTriggers(  # noqa: N802
+        self,
+        request_iterator: AsyncIterator[
+            trigger_publication_pb2.StreamTriggersRequest
+        ],
+        context,
+    ) -> AsyncIterator[trigger_publication_pb2.StreamTriggersResponse]:
+        del context
+        opening = await anext(request_iterator)
+        binding = opening.open.session_binding
+        yield trigger_publication_pb2.StreamTriggersResponse(
+            ready=trigger_publication_pb2.TriggerStreamReady(
+                provider_instance_id=binding.expected_provider_instance_id,
+                endpoint_generation=binding.expected_endpoint_generation,
+                session_id=binding.expected_session_id,
+                manifest_revision=binding.expected_manifest_revision,
+                maximum_in_flight_publications=self.window,
+            )
+        )
+        for publication in self.publications:
+            yield trigger_publication_pb2.StreamTriggersResponse(
+                publication=publication
+            )
+        for _ in range(len(self.publications)):
+            request = await anext(request_iterator)
+            self.acknowledgements.append(request.acknowledgement)
+
+
+class _ScriptedCall:
+    """Expose deterministic decoded responses without transport buffering."""
+
+    def __init__(
+        self,
+        publications: list[trigger_publication_pb2.TriggerPublication],
+    ) -> None:
+        self._responses = [
+            _DecodedTriggerResponse(
+                response=trigger_publication_pb2.StreamTriggersResponse(
+                    publication=publication
+                )
+            )
+            for publication in publications
+        ]
+        self.requests: list[trigger_publication_pb2.StreamTriggersRequest] = []
+        self.cancelled = False
+
+    async def write(
+        self,
+        request: trigger_publication_pb2.StreamTriggersRequest,
+    ) -> None:
+        self.requests.append(request)
+
+    async def read(self) -> object:
+        await asyncio.sleep(0)
+        return self._responses.pop(0)
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+
 async def _start_peer(
-    peer: _TriggerPeer,
+    peer: trigger_publication_pb2_grpc.TriggerPublicationServiceServicer,
 ) -> tuple[grpc.aio.Server, grpc.aio.Channel]:
     server = grpc.aio.server()
     trigger_publication_pb2_grpc.add_TriggerPublicationServiceServicer_to_server(
@@ -249,6 +377,177 @@ async def test_client_opens_real_stream_and_returns_durable_ack() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "error", "message"),
+    [
+        (
+            "eof-before-ready",
+            SfpTriggerPublicationUnavailableError,
+            "stream ended",
+        ),
+        (
+            "publication-before-ready",
+            SfpTriggerPublicationProtocolError,
+            "did not begin with ready",
+        ),
+        (
+            "mismatched-ready",
+            SfpTriggerPublicationProtocolError,
+            "ready response failed validation",
+        ),
+        (
+            "zero-window",
+            SfpTriggerPublicationProtocolError,
+            "response failed canonical validation",
+        ),
+        (
+            "larger-window",
+            SfpTriggerPublicationProtocolError,
+            "ready response failed validation",
+        ),
+        (
+            "duplicate-ready",
+            SfpTriggerPublicationProtocolError,
+            "invalid framing",
+        ),
+    ],
+)
+async def test_client_rejects_invalid_stream_opening_sequences(
+    scenario: str,
+    error: type[SfpTriggerPublicationError],
+    message: str,
+) -> None:
+    peer = _ReadyScenarioPeer(scenario)
+    server, channel = await _start_peer(peer)
+    lease = _lease()
+
+    async def unreachable_handler(
+        publication: trigger_publication_pb2.TriggerPublication,
+    ) -> trigger_publication_pb2.TriggerAcknowledgement:
+        raise AssertionError(publication)
+
+    try:
+        with pytest.raises(error, match=message):
+            await TriggerPublicationClient().consume(
+                channel,
+                TriggerStreamBinding(
+                    provider_instance_id=str(lease.provider_instance_id),
+                    endpoint_generation=lease.endpoint_generation,
+                    session_id=lease.session_id,
+                    manifest_revision=lease.manifest_revision,
+                    maximum_in_flight_publications=2,
+                ),
+                unreachable_handler,
+            )
+    finally:
+        await channel.close()
+        await server.stop(None)
+
+
+@pytest.mark.asyncio
+async def test_client_accepts_publications_at_selected_receive_window() -> (
+    None
+):
+    peer = _WindowPeer(
+        _SELECTED_RECEIVE_WINDOW,
+        window=_SELECTED_RECEIVE_WINDOW,
+    )
+    server, channel = await _start_peer(peer)
+    lease = _lease()
+
+    async def accept(
+        publication: trigger_publication_pb2.TriggerPublication,
+    ) -> trigger_publication_pb2.TriggerAcknowledgement:
+        return trigger_publication_pb2.TriggerAcknowledgement(
+            publication_id=publication.publication_id,
+            disposition=(
+                trigger_publication_pb2.TRIGGER_ACKNOWLEDGEMENT_DISPOSITION_ACCEPTED_NEW
+            ),
+        )
+
+    try:
+        with pytest.raises(
+            SfpTriggerPublicationUnavailableError,
+            match="stream ended",
+        ):
+            await TriggerPublicationClient().consume(
+                channel,
+                TriggerStreamBinding(
+                    provider_instance_id=str(lease.provider_instance_id),
+                    endpoint_generation=lease.endpoint_generation,
+                    session_id=lease.session_id,
+                    manifest_revision=lease.manifest_revision,
+                    maximum_in_flight_publications=_SELECTED_RECEIVE_WINDOW,
+                ),
+                accept,
+            )
+        assert {
+            acknowledgement.publication_id
+            for acknowledgement in peer.acknowledgements
+        } == {publication.publication_id for publication in peer.publications}
+    finally:
+        await channel.close()
+        await server.stop(None)
+
+
+@pytest.mark.asyncio
+async def test_client_rejects_publication_over_selected_receive_window() -> (
+    None
+):
+    call = _ScriptedCall(
+        [_publication() for _ in range(_SELECTED_RECEIVE_WINDOW + 1)]
+    )
+    release = asyncio.Event()
+    started = 0
+
+    async def blocked_accept(
+        publication: trigger_publication_pb2.TriggerPublication,
+    ) -> trigger_publication_pb2.TriggerAcknowledgement:
+        nonlocal started
+        started += 1
+        await release.wait()
+        return trigger_publication_pb2.TriggerAcknowledgement(
+            publication_id=publication.publication_id,
+            disposition=(
+                trigger_publication_pb2.TRIGGER_ACKNOWLEDGEMENT_DISPOSITION_ACCEPTED_NEW
+            ),
+        )
+
+    with pytest.raises(
+        SfpTriggerPublicationLimitError,
+        match="exceeded the selected receive window",
+    ):
+        await _consume_publications(
+            call,
+            maximum_in_flight=_SELECTED_RECEIVE_WINDOW,
+            handler=blocked_accept,
+        )
+    assert started == _SELECTED_RECEIVE_WINDOW
+    assert call.requests == []
+
+
+@pytest.mark.parametrize("status", list(grpc.StatusCode))
+def test_client_maps_every_grpc_status_to_stable_agent_error(
+    status: grpc.StatusCode,
+) -> None:
+    if status in {
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.CANCELLED,
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+    }:
+        expected = SfpTriggerPublicationUnavailableError
+    elif status is grpc.StatusCode.FAILED_PRECONDITION:
+        expected = SfpTriggerPublicationStaleError
+    elif status is grpc.StatusCode.RESOURCE_EXHAUSTED:
+        expected = SfpTriggerPublicationLimitError
+    else:
+        expected = SfpTriggerPublicationProtocolError
+
+    with pytest.raises(expected):
+        _raise_rpc_error(status)
+
+
+@pytest.mark.asyncio
 async def test_accepts_new_and_duplicate_publications(tmp_path: Path) -> None:
     publication = _publication()
     consumer = _ScriptedConsumer([publication, publication])
@@ -263,6 +562,56 @@ async def test_accepts_new_and_duplicate_publications(tmp_path: Path) -> None:
         trigger_publication_pb2.TRIGGER_ACKNOWLEDGEMENT_DISPOSITION_ACCEPTED_NEW,
         trigger_publication_pb2.TRIGGER_ACKNOWLEDGEMENT_DISPOSITION_ACCEPTED_DUPLICATE,
     ]
+    await journal.close()
+
+
+@pytest.mark.asyncio
+async def test_publication_identity_is_scoped_to_provider(
+    tmp_path: Path,
+) -> None:
+    publication = _publication(
+        publication_id="11111111-1111-4111-8111-111111111111"
+    )
+    consumer = _ScriptedConsumer([])
+    journal, store, _ = await _coordinator(
+        tmp_path / "agent.db",
+        consumer,
+    )
+    first_lease = _lease()
+    second_lease = _lease()
+    first_context = TriggerAcceptanceContext(
+        provider_instance_id=first_lease.provider_instance_id,
+        endpoint_generation=first_lease.endpoint_generation,
+        session_id=first_lease.session_id,
+        manifest_revision=first_lease.manifest_revision,
+    )
+    second_context = TriggerAcceptanceContext(
+        provider_instance_id=second_lease.provider_instance_id,
+        endpoint_generation=second_lease.endpoint_generation,
+        session_id=second_lease.session_id,
+        manifest_revision=second_lease.manifest_revision,
+    )
+
+    first = await store.accept(first_context, publication)
+    second = await store.accept(second_context, publication)
+    first_conflict = await store.accept(
+        first_context,
+        _publication(
+            publication_id=publication.publication_id,
+            payload={"unit": "postgresql.service"},
+        ),
+    )
+    second_replay = await store.accept(second_context, publication)
+
+    assert first.decision is TriggerAcceptanceDecision.ACCEPTED_NEW
+    assert second.decision is TriggerAcceptanceDecision.ACCEPTED_NEW
+    assert first_conflict.decision is (
+        TriggerAcceptanceDecision.IDEMPOTENCY_CONFLICT
+    )
+    assert second_replay.decision is (
+        TriggerAcceptanceDecision.ACCEPTED_DUPLICATE
+    )
+    assert await store.pending_count() == _ISOLATED_PROVIDER_COUNT
     await journal.close()
 
 

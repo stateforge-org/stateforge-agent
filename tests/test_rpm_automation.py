@@ -440,6 +440,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "rpm/test-installed/setup",
         "rpm/test-installed/smoke/manifest-exchange",
         "rpm/test-installed/triggers/publication",
+        "rpm/test-installed/triggers/storage-failure",
     }
     observed = {
         str(path.parent.relative_to(ACTIONS))
@@ -647,6 +648,20 @@ def test_installed_trigger_scenario_uses_public_api_and_journal() -> None:
     assert "./.github/actions/agent/start" in scenario
     assert "before-agent-restart" in scenario
     assert "after-agent-restart" in scenario
+    assert "after-callback" in scenario
+    assert "drop-trigger-acks-until-restart" in scenario
+    assert "accepted_duplicate" in scenario
+    assert "provider-replay-outcome.txt" in scenario
+    assert "content_fingerprint" in scenario
+    assert "systemctl kill --kill-whom=main --signal=SIGKILL" in scenario
+    assert "first-trigger-publication-id" in scenario
+    assert "isolation-provider-a" in scenario
+    assert "isolation-provider-b" in scenario
+    assert "PROVIDER_A_INSTANCE_ID" in scenario
+    assert "PROVIDER_B_INSTANCE_ID" in scenario
+    assert "isolation-provider-b-after-a-disconnect" in scenario
+    assert "isolation-provider-a-after-disconnect" in scenario
+    assert "isolation-provider-b-outcome.txt" in scenario
     assert "stateforge.test/runtime.started@1" in scenario
     assert "stateforge.test/runtime.refreshed@1" in scenario
     assert "@trigger(" in fixture
@@ -656,3 +671,29 @@ def test_installed_trigger_scenario_uses_public_api_and_journal() -> None:
     assert "validate_trigger_publication" in assertion
     assert "compute_publication_content_fingerprint" in assertion
     assert 'row["forwarding_state"] != "pending"' in assertion
+
+
+def test_installed_trigger_storage_failure_recovers_without_false_ack() -> (
+    None
+):
+    """Exercise a real journal write denial before retrying one event."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario = read(
+        ACTIONS
+        / "rpm"
+        / "test-installed"
+        / "triggers"
+        / "storage-failure"
+        / "action.yml"
+    )
+
+    assert "trigger-storage-failure" in workflow
+    assert "./.github/actions/rpm/test-installed/setup" in scenario
+    assert "./.github/actions/provider/start" in scenario
+    assert "chmod u-w" in scenario
+    assert "during-storage-failure" in scenario
+    assert "chmod u+w" in scenario
+    assert "after-storage-recovery" in scenario
+    assert "Provider received a terminal ACK while storage failed" in scenario
+    assert "stateforge.test/runtime.refreshed@1" in scenario
+    assert "./.github/actions/rpm/test-installed/cleanup" in scenario

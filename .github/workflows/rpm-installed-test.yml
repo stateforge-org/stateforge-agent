@@ -109,6 +109,7 @@ jobs:
           - capability-limits
           - provider-availability
           - trigger-publication
+          - trigger-storage-failure
           - multiple-providers
           - invalid-descriptor
           - uninstall-reinstall
@@ -169,6 +170,13 @@ jobs:
       - name: Run Trigger Publication scenario
         if: ${{ matrix.scenario == 'trigger-publication' }}
         uses: ./.github/actions/rpm/test-installed/triggers/publication
+        with:
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          fixture-directory: dist/provider-fixture
+
+      - name: Run Trigger Publication storage-failure scenario
+        if: ${{ matrix.scenario == 'trigger-storage-failure' }}
+        uses: ./.github/actions/rpm/test-installed/triggers/storage-failure
         with:
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
           fixture-directory: dist/provider-fixture

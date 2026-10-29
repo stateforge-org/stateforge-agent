@@ -32,6 +32,14 @@ inputs:
     description: Make the first real Capability Assessment RPC unavailable.
     required: false
     default: "false"
+  drop-trigger-acks-until-restart:
+    description: Discard trigger acknowledgements until the restart marker exists.
+    required: false
+    default: "false"
+  first-trigger-publication-id:
+    description: Deterministic UUID for the fixture's first trigger publication.
+    required: false
+    default: ""
 
 outputs:
   provider-instance-id:
@@ -57,6 +65,8 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         CAPABILITY_UNAVAILABLE_ONCE: ${{ inputs.capability-unavailable-once }}
         CONTAINER_NAME: ${{ inputs.container-name }}
+        DROP_TRIGGER_ACKS: ${{ inputs.drop-trigger-acks-until-restart }}
+        FIRST_TRIGGER_PUBLICATION_ID: ${{ inputs.first-trigger-publication-id }}
         FIXTURE_PATH: ${{ inputs.fixture-path }}
         PROVIDER_IDENTITY: ${{ inputs.provider-identity }}
         PROVIDER_NAME: ${{ inputs.provider-name }}
@@ -80,6 +90,7 @@ runs:
         identity_path="${state_directory}/identity.json"
         event_log="${state_directory}/events.log"
         target_path="${state_directory}/target-state.txt"
+        trigger_ack_marker="${state_directory}/accept-trigger-acks"
         service_user="sf-${PROVIDER_NAME}"
         unit_name="stateforge-test-${PROVIDER_NAME}.service"
 
@@ -87,6 +98,18 @@ runs:
           "${fixture_root}/wheels" "${state_directory}"
         docker exec "${CONTAINER_NAME}" bash -lc \
           "printf 'fixture-target-state\\n' > '${target_path}'"
+        if [[ "${DROP_TRIGGER_ACKS}" == "true" ]]; then
+          docker exec "${CONTAINER_NAME}" rm -f "${trigger_ack_marker}"
+        elif [[ "${DROP_TRIGGER_ACKS}" != "false" ]]; then
+          printf 'drop-trigger-acks-until-restart must be true or false.\n' >&2
+          exit 2
+        fi
+        if [[ -n "${FIRST_TRIGGER_PUBLICATION_ID}" \
+          && ! "${FIRST_TRIGGER_PUBLICATION_ID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+          printf 'first-trigger-publication-id must be a lowercase UUIDv4.\n' \
+            >&2
+          exit 2
+        fi
         docker cp "${FIXTURE_PATH}" \
           "${CONTAINER_NAME}:${fixture_root}/provider.py"
         docker cp "${ACTION_PATH}/resolve-ready-endpoint.sh" \
@@ -140,6 +163,12 @@ runs:
             "STATEFORGE_TEST_TARGET_PATH=${target_path}" \
           --setenv \
             "STATEFORGE_TEST_CAPABILITY_UNAVAILABLE_ONCE=${CAPABILITY_UNAVAILABLE_ONCE}" \
+          --setenv \
+            "STATEFORGE_TEST_DROP_TRIGGER_ACKS=${DROP_TRIGGER_ACKS}" \
+          --setenv \
+            "STATEFORGE_TEST_TRIGGER_ACK_MARKER=${trigger_ack_marker}" \
+          --setenv \
+            "STATEFORGE_TEST_FIRST_TRIGGER_PUBLICATION_ID=${FIRST_TRIGGER_PUBLICATION_ID}" \
           /usr/bin/python3 "${fixture_root}/provider.py"
 
         discovery_directory="/run/stateforge-agent/providers"

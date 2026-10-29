@@ -38,6 +38,7 @@ runs:
         container-name: ${{ steps.setup.outputs.container-name }}
         fixture-path: ${{ steps.setup.outputs.fixture-path }}
         wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        drop-trigger-acks-until-restart: "true"
 
     - name: Assert decorated trigger acceptance
       uses: ./.github/actions/agent/assert-trigger-publication
@@ -48,19 +49,113 @@ runs:
         evidence-name: before-agent-restart
         evidence-directory: ${{ inputs.evidence-directory }}
 
-    - name: Stop the installed Agent
+    - name: Confirm durable commit preceded the lost acknowledgement
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        set -euo pipefail
+        event_log=/var/lib/stateforge-provider-fixtures/provider-a/events.log
+        deadline=$((SECONDS + 60))
+        publication_id=""
+        while (( SECONDS < deadline )); do
+          publication_id="$(docker exec "${CONTAINER_NAME}" \
+            sed -n \
+              's/^trigger-ack-dropped:\([0-9a-f-]*\):accepted_new$/\1/p' \
+              "${event_log}" | tail -1)"
+          [[ -n "${publication_id}" ]] && break
+          sleep 1
+        done
+        if [[ -z "${publication_id}" ]]; then
+          printf 'Provider did not discard the first terminal ACK.\n' >&2
+          exit 1
+        fi
+        jq -e --arg publication_id "${publication_id}" \
+          '.publication_count == 1
+           and .publications[0].publication_id == $publication_id' \
+          "${EVIDENCE_DIRECTORY}/before-agent-restart.json" >/dev/null
+        printf '%s\n' "${publication_id}" \
+          > "${EVIDENCE_DIRECTORY}/replayed-publication-id.txt"
+
+    - name: Crash the installed Agent after durable acceptance
       shell: bash
       env:
         CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
       run: |
         set -euo pipefail
         docker exec "${CONTAINER_NAME}" \
+          systemctl kill --kill-whom=main --signal=SIGKILL \
+            stateforge-agent.service
+        docker exec "${CONTAINER_NAME}" \
           systemctl stop stateforge-agent.service
+
+    - name: Permit the replay acknowledgement
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+      run: |
+        set -euo pipefail
+        docker exec "${CONTAINER_NAME}" \
+          touch \
+            /var/lib/stateforge-provider-fixtures/provider-a/accept-trigger-acks
 
     - name: Start the same installed Agent again
       uses: ./.github/actions/agent/start
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
+
+    - name: Confirm exact replay received the duplicate acknowledgement
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        set -euo pipefail
+        event_log=/var/lib/stateforge-provider-fixtures/provider-a/events.log
+        publication_id="$(cat \
+          "${EVIDENCE_DIRECTORY}/replayed-publication-id.txt")"
+        expected="trigger-ack-observed:${publication_id}:accepted_duplicate"
+        deadline=$((SECONDS + 60))
+        observed=""
+        while (( SECONDS < deadline )); do
+          observed="$(docker exec "${CONTAINER_NAME}" \
+            grep -Fx "${expected}" "${event_log}" || true)"
+          [[ -n "${observed}" ]] && break
+          sleep 1
+        done
+        if [[ -z "${observed}" ]]; then
+          printf 'Provider did not receive the duplicate replay ACK.\n' >&2
+          exit 1
+        fi
+        printf '%s\n' "${observed}" \
+          > "${EVIDENCE_DIRECTORY}/provider-replay-outcome.txt"
+
+    - name: Assert restart replay retained one immutable publication
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        expected-triggers: stateforge.test/runtime.started@1
+        evidence-name: after-agent-restart
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Compare durable evidence across the replay
+      shell: bash
+      env:
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        set -euo pipefail
+        before="${EVIDENCE_DIRECTORY}/before-agent-restart.json"
+        after="${EVIDENCE_DIRECTORY}/after-agent-restart.json"
+        jq -e --slurp \
+          '.[0].publication_count == 1
+           and .[1].publication_count == 1
+           and .[0].publications[0].publication_id
+             == .[1].publications[0].publication_id
+           and .[0].publications[0].content_fingerprint
+             == .[1].publications[0].content_fingerprint' \
+          "${before}" "${after}" >/dev/null
 
     - name: Publish through the Provider callback API
       shell: bash
@@ -72,7 +167,7 @@ runs:
         docker exec "${CONTAINER_NAME}" \
           systemctl kill --kill-whom=main --signal=SIGALRM "${UNIT_NAME}"
 
-    - name: Assert restart persistence and callback acceptance
+    - name: Assert callback acceptance after replay recovery
       uses: ./.github/actions/agent/assert-trigger-publication
       with:
         container-name: ${{ steps.setup.outputs.container-name }}
@@ -80,7 +175,7 @@ runs:
         expected-triggers: >-
           stateforge.test/runtime.started@1
           stateforge.test/runtime.refreshed@1
-        evidence-name: after-agent-restart
+        evidence-name: after-callback
         evidence-directory: ${{ inputs.evidence-directory }}
 
     - name: Preserve Provider acknowledgement evidence
@@ -106,6 +201,168 @@ runs:
         fi
         printf '%s\n' "${outcome}" \
           > "${EVIDENCE_DIRECTORY}/provider-trigger-outcome.txt"
+
+    - name: Start isolation Provider A
+      id: isolation_a
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: trigger-a
+        provider-identity: stateforge.test.trigger.a
+        first-trigger-publication-id: 11111111-1111-4111-8111-111111111111
+
+    - name: Start isolation Provider B
+      id: isolation_b
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: trigger-b
+        provider-identity: stateforge.test.trigger.b
+        first-trigger-publication-id: 11111111-1111-4111-8111-111111111111
+
+    - name: Assert Provider A publication ownership
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.isolation_a.outputs.provider-instance-id }}
+        expected-triggers: stateforge.test/runtime.started@1
+        evidence-name: isolation-provider-a
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Assert Provider B publication ownership
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.isolation_b.outputs.provider-instance-id }}
+        expected-triggers: stateforge.test/runtime.started@1
+        evidence-name: isolation-provider-b
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Confirm identical IDs and acknowledgement routing remain isolated
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+        PROVIDER_A_INSTANCE_ID: ${{ steps.isolation_a.outputs.provider-instance-id }}
+        PROVIDER_B_INSTANCE_ID: ${{ steps.isolation_b.outputs.provider-instance-id }}
+      run: |
+        set -euo pipefail
+        publication_id=11111111-1111-4111-8111-111111111111
+        if [[ "${PROVIDER_A_INSTANCE_ID}" == "${PROVIDER_B_INSTANCE_ID}" ]]; then
+          printf 'Isolation Providers share one installation identity.\n' >&2
+          exit 1
+        fi
+        provider_a_session="$(jq -r \
+          '.publications[0].session_id_sha256' \
+          "${EVIDENCE_DIRECTORY}/isolation-provider-a.json")"
+        provider_b_session="$(jq -r \
+          '.publications[0].session_id_sha256' \
+          "${EVIDENCE_DIRECTORY}/isolation-provider-b.json")"
+        if [[ "${provider_a_session}" == "${provider_b_session}" ]]; then
+          printf 'Isolation Providers share one fenced SFP session.\n' >&2
+          exit 1
+        fi
+        for provider in a b; do
+          evidence="${EVIDENCE_DIRECTORY}/isolation-provider-${provider}.json"
+          jq -e --arg publication_id "${publication_id}" \
+            '.publication_count == 1
+             and .publications[0].publication_id == $publication_id
+             and .publications[0].forwarding_state == "pending"' \
+            "${evidence}" >/dev/null
+
+          event_log="/var/lib/stateforge-provider-fixtures/trigger-${provider}/events.log"
+          expected="trigger-ack-observed:${publication_id}:accepted_new"
+          deadline=$((SECONDS + 60))
+          observed=""
+          while (( SECONDS < deadline )); do
+            observed="$(docker exec "${CONTAINER_NAME}" \
+              grep -Fx "${expected}" "${event_log}" || true)"
+            [[ -n "${observed}" ]] && break
+            sleep 1
+          done
+          if [[ -z "${observed}" ]]; then
+            printf 'Provider %s did not receive its terminal ACK.\n' \
+              "${provider}" >&2
+            exit 1
+          fi
+        done
+
+    - name: Disconnect Provider A while Provider B remains active
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        PROVIDER_A_UNIT: ${{ steps.isolation_a.outputs.unit-name }}
+        PROVIDER_B_UNIT: ${{ steps.isolation_b.outputs.unit-name }}
+      run: |
+        set -euo pipefail
+        docker exec "${CONTAINER_NAME}" \
+          systemctl stop "${PROVIDER_A_UNIT}"
+        if docker exec "${CONTAINER_NAME}" \
+          systemctl is-active --quiet "${PROVIDER_A_UNIT}"; then
+          printf 'Provider A remained active after its stop completed.\n' >&2
+          exit 1
+        fi
+        docker exec "${CONTAINER_NAME}" \
+          systemctl is-active --quiet "${PROVIDER_B_UNIT}"
+        docker exec "${CONTAINER_NAME}" \
+          systemctl kill --kill-whom=main --signal=SIGALRM \
+            "${PROVIDER_B_UNIT}"
+
+    - name: Assert Provider B continues after Provider A disconnects
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.isolation_b.outputs.provider-instance-id }}
+        expected-triggers: >-
+          stateforge.test/runtime.started@1
+          stateforge.test/runtime.refreshed@1
+        evidence-name: isolation-provider-b-after-a-disconnect
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Assert Provider A retained only its own publication
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.isolation_a.outputs.provider-instance-id }}
+        expected-triggers: stateforge.test/runtime.started@1
+        evidence-name: isolation-provider-a-after-disconnect
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Confirm Provider B receives its post-fault acknowledgement
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        set -euo pipefail
+        event_log=/var/lib/stateforge-provider-fixtures/trigger-b/events.log
+        deadline=$((SECONDS + 60))
+        outcome=""
+        while (( SECONDS < deadline )); do
+          outcome="$(docker exec "${CONTAINER_NAME}" \
+            grep -E '^trigger-outcome:[0-9a-f-]+:accepted_new$' \
+              "${event_log}" || true)"
+          [[ -n "${outcome}" ]] && break
+          sleep 1
+        done
+        if [[ -z "${outcome}" ]]; then
+          printf 'Provider B did not receive its post-fault ACK.\n' >&2
+          exit 1
+        fi
+        printf '%s\n' "${outcome}" \
+          > "${EVIDENCE_DIRECTORY}/isolation-provider-b-outcome.txt"
+        jq -e \
+          '.publication_count == 2
+           and any(
+             .publications[];
+             .publication_id == "11111111-1111-4111-8111-111111111111"
+           )' \
+          "${EVIDENCE_DIRECTORY}/isolation-provider-b-after-a-disconnect.json" \
+          >/dev/null
 
     - name: Preserve evidence and clean up
       id: cleanup

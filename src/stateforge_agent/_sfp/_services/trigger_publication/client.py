@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Never, Protocol
+from typing import Any, Never, Protocol
 
 import grpc
 from google.protobuf.message import DecodeError
@@ -152,23 +153,68 @@ class TriggerPublicationClient:
                 raise SfpTriggerPublicationProtocolError(
                     "Trigger Publication ready response failed validation"
                 ) from error
+            await _consume_publications(
+                call,
+                maximum_in_flight=first.ready.maximum_in_flight_publications,
+                handler=handler,
+            )
+        except grpc.aio.AioRpcError as error:
+            _raise_rpc_error(error.code())
+        finally:
+            call.cancel()
 
-            while True:
-                response = await _read_response(call)
+
+async def _consume_publications(
+    call: _TriggerStreamCall,
+    *,
+    maximum_in_flight: int,
+    handler: TriggerPublicationHandler,
+) -> None:
+    """Bound concurrent durable work by the Provider-selected wire window."""
+    reader = asyncio.create_task(_read_response(call))
+    handlers: set[
+        asyncio.Future[trigger_publication_pb2.TriggerAcknowledgement]
+    ] = set()
+    try:
+        while True:
+            waiters: set[asyncio.Future[Any]] = {reader}
+            waiters.update(handlers)
+            done, _ = await asyncio.wait(
+                waiters,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if reader in done:
+                response = reader.result()
                 if response.WhichOneof("message") != "publication":
                     raise SfpTriggerPublicationProtocolError(
                         "Trigger Publication stream returned invalid framing"
                     )
-                acknowledgement = await handler(response.publication)
+                if len(handlers) >= maximum_in_flight:
+                    raise SfpTriggerPublicationLimitError(
+                        "Trigger Publication Provider exceeded the selected "
+                        "receive window"
+                    )
+                handlers.add(
+                    asyncio.ensure_future(handler(response.publication))
+                )
+                reader = asyncio.create_task(_read_response(call))
+                continue
+
+            for task in tuple(handlers):
+                if task not in done:
+                    continue
+                handlers.remove(task)
+                acknowledgement = task.result()
                 request = trigger_publication_pb2.StreamTriggersRequest(
                     acknowledgement=acknowledgement
                 )
                 _validate_request(request)
                 await call.write(request)
-        except grpc.aio.AioRpcError as error:
-            _raise_rpc_error(error.code())
-        finally:
-            call.cancel()
+    finally:
+        reader.cancel()
+        for task in handlers:
+            task.cancel()
+        await asyncio.gather(reader, *handlers, return_exceptions=True)
 
 
 def _validate_request(

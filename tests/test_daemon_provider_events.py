@@ -3,6 +3,7 @@
 import json
 import signal
 import socket
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -258,6 +259,52 @@ async def test_provider_directory_failure_returns_runtime_failure(
         _configuration(tmp_path),
         _runtime_layout(tmp_path),
     )
+
+    assert result is ProcessExitCode.RUNTIME_FAILURE
+
+
+@pytest.mark.asyncio
+async def test_corrupt_journal_returns_runtime_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _runtime_layout(tmp_path)
+    layout.journal_path.parent.mkdir(parents=True)
+    layout.journal_path.write_bytes(b"not a SQLite database")
+    monkeypatch.setattr(daemon, "_install_signal_handlers", lambda *_: ())
+
+    result = await daemon._run_agent(_configuration(tmp_path), layout)
+
+    assert result is ProcessExitCode.RUNTIME_FAILURE
+
+
+@pytest.mark.asyncio
+async def test_incompatible_trigger_schema_returns_runtime_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _runtime_layout(tmp_path)
+    layout.journal_path.parent.mkdir(parents=True)
+    connection = sqlite3.connect(layout.journal_path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE journal_schemas (
+                component TEXT PRIMARY KEY,
+                version INTEGER NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        connection.execute(
+            "INSERT INTO journal_schemas (component, version) VALUES (?, ?)",
+            ("trigger_publication", 999),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    monkeypatch.setattr(daemon, "_install_signal_handlers", lambda *_: ())
+
+    result = await daemon._run_agent(_configuration(tmp_path), layout)
 
     assert result is ProcessExitCode.RUNTIME_FAILURE
 

@@ -1,0 +1,188 @@
+name: Test installed Trigger Publication storage recovery
+description: Verify retryable publication behavior across a real journal write failure.
+
+inputs:
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario's evidence.
+    required: false
+    default: dist/agent-system-test-evidence/trigger-storage-failure
+  fixture-directory:
+    description: Directory containing the exact Provider fixture bundle.
+    required: false
+    default: dist/provider-fixture
+
+outputs:
+  evidence-directory:
+    description: Absolute directory containing scenario evidence.
+    value: ${{ steps.cleanup.outputs.evidence-directory }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare installed Agent
+      id: setup
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+        fixture-directory: ${{ inputs.fixture-directory }}
+
+    - name: Start real Provider fixture
+      id: provider
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: storage-a
+        provider-identity: stateforge.test.trigger.storage
+
+    - name: Assert baseline durable publication
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        expected-triggers: stateforge.test/runtime.started@1
+        evidence-name: before-storage-failure
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Deny journal writes and request a callback publication
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+        UNIT_NAME: ${{ steps.provider.outputs.unit-name }}
+      run: |
+        set -euo pipefail
+        journal_directory=/var/lib/stateforge-agent/journal
+        database="${journal_directory}/agent.db"
+        event_log=/var/lib/stateforge-provider-fixtures/storage-a/events.log
+        mkdir -p "${EVIDENCE_DIRECTORY}"
+        docker exec "${CONTAINER_NAME}" stat --format='%A %a %U:%G %n' \
+          "${journal_directory}" "${database}" \
+          > "${EVIDENCE_DIRECTORY}/journal-permissions-before.txt"
+        baseline_outcomes="$(docker exec "${CONTAINER_NAME}" \
+          grep -Ec '^trigger-outcome:[0-9a-f-]+:accepted_new$' \
+            "${event_log}" || true)"
+        printf '%s\n' "${baseline_outcomes}" \
+          > "${EVIDENCE_DIRECTORY}/baseline-outcome-count.txt"
+        docker exec "${CONTAINER_NAME}" bash -lc \
+          "chmod u-w '${journal_directory}' '${database}'*"
+        docker exec "${CONTAINER_NAME}" \
+          systemctl kill --kill-whom=main --signal=SIGALRM "${UNIT_NAME}"
+
+        scheduled='trigger-scheduled:stateforge.test/runtime.refreshed@1'
+        deadline=$((SECONDS + 60))
+        while (( SECONDS < deadline )); do
+          if docker exec "${CONTAINER_NAME}" \
+            grep -Fxq "${scheduled}" "${event_log}"; then
+            break
+          fi
+          sleep 1
+        done
+        if ! docker exec "${CONTAINER_NAME}" \
+          grep -Fxq "${scheduled}" "${event_log}"; then
+          printf 'Provider did not schedule the callback publication.\n' >&2
+          exit 1
+        fi
+        sleep 3
+
+    - name: Assert failed storage assumed no new responsibility
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        expected-triggers: stateforge.test/runtime.started@1
+        evidence-name: during-storage-failure
+        evidence-directory: ${{ inputs.evidence-directory }}
+        timeout-seconds: "5"
+
+    - name: Confirm no terminal acknowledgement escaped the failure
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        set -euo pipefail
+        event_log=/var/lib/stateforge-provider-fixtures/storage-a/events.log
+        before="$(cat \
+          "${EVIDENCE_DIRECTORY}/baseline-outcome-count.txt")"
+        after="$(docker exec "${CONTAINER_NAME}" \
+          grep -Ec '^trigger-outcome:[0-9a-f-]+:accepted_new$' \
+            "${event_log}" || true)"
+        if [[ "${after}" != "${before}" ]]; then
+          printf 'Provider received a terminal ACK while storage failed.\n' \
+            >&2
+          exit 1
+        fi
+        docker exec "${CONTAINER_NAME}" \
+          systemctl is-active --quiet stateforge-agent.service
+
+    - name: Restore journal writes
+      if: ${{ always() }}
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        set -euo pipefail
+        journal_directory=/var/lib/stateforge-agent/journal
+        database="${journal_directory}/agent.db"
+        if docker inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+          docker exec "${CONTAINER_NAME}" bash -lc \
+            "chmod u+w '${journal_directory}' '${database}'*"
+          docker exec "${CONTAINER_NAME}" \
+            stat --format='%A %a %U:%G %n' \
+              "${journal_directory}" "${database}" \
+            > "${EVIDENCE_DIRECTORY}/journal-permissions-after.txt"
+        fi
+
+    - name: Assert queued publication succeeds after storage recovery
+      uses: ./.github/actions/agent/assert-trigger-publication
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.provider.outputs.provider-instance-id }}
+        expected-triggers: >-
+          stateforge.test/runtime.started@1
+          stateforge.test/runtime.refreshed@1
+        evidence-name: after-storage-recovery
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Confirm Provider receives the recovered acknowledgement
+      shell: bash
+      env:
+        CONTAINER_NAME: ${{ steps.setup.outputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        set -euo pipefail
+        event_log=/var/lib/stateforge-provider-fixtures/storage-a/events.log
+        before="$(cat \
+          "${EVIDENCE_DIRECTORY}/baseline-outcome-count.txt")"
+        expected=$((before + 1))
+        deadline=$((SECONDS + 60))
+        after=0
+        while (( SECONDS < deadline )); do
+          after="$(docker exec "${CONTAINER_NAME}" \
+            grep -Ec '^trigger-outcome:[0-9a-f-]+:accepted_new$' \
+              "${event_log}" || true)"
+          [[ "${after}" == "${expected}" ]] && break
+          sleep 1
+        done
+        if [[ "${after}" != "${expected}" ]]; then
+          printf 'Provider did not receive the recovered terminal ACK.\n' >&2
+          exit 1
+        fi
+        docker exec "${CONTAINER_NAME}" tail -n 20 "${event_log}" \
+          > "${EVIDENCE_DIRECTORY}/provider-storage-recovery-events.txt"
+
+    - name: Preserve evidence and clean up
+      id: cleanup
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        container-name: stateforge-agent-system-test
+        evidence-directory: ${{ inputs.evidence-directory }}

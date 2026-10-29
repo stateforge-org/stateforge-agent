@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TypeVar
 
 _Result = TypeVar("_Result")
+_BUSY_TIMEOUT_MILLISECONDS = 5000
 
 
 class SqliteJournalError(RuntimeError):
@@ -94,10 +95,12 @@ class SqliteJournal:
         """Open one fully configured local connection."""
         connection = sqlite3.connect(
             self._path,
-            timeout=5,
+            timeout=_BUSY_TIMEOUT_MILLISECONDS / 1000,
             isolation_level=None,
         )
-        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute(
+            f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MILLISECONDS}"
+        )
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA synchronous = FULL")
         return connection

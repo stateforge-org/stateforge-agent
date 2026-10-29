@@ -7,12 +7,16 @@ import contextlib
 import hashlib
 import os
 import signal
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from uuid import UUID
 
 import grpc
 from stateforge_protocol.sfp.capability_assessment.v1 import (
     capability_assessment_pb2,
+)
+from stateforge_protocol.sfp.trigger_publication.v1 import (
+    trigger_publication_pb2,
 )
 from stateforge_provider import (
     HealthStatus,
@@ -27,6 +31,13 @@ from stateforge_provider import (
 )
 from stateforge_provider._services.capability_assessment.service import (
     CapabilityAssessmentService,
+)
+from stateforge_provider._services.trigger_publication import (
+    runtime as trigger_publication_runtime,
+)
+from stateforge_provider._services.trigger_publication.runtime import (
+    TriggerPublicationRuntime,
+    TriggerStreamLease,
 )
 
 _CAPABILITY_ATTEMPT_PREFIX = "rpc:capability-assessment:"
@@ -217,6 +228,7 @@ class ManifestFixtureProvider(Provider):
 
     def _schedule_trigger(self) -> None:
         """Schedule callback publication from a process signal."""
+        self._record(f"trigger-scheduled:{_RUNTIME_REFRESHED.identifier}")
         task = asyncio.create_task(self._publish_callback_trigger())
         self._trigger_tasks.add(task)
         task.add_done_callback(self._trigger_tasks.discard)
@@ -293,9 +305,80 @@ def _install_capability_unavailable_once() -> None:
     CapabilityAssessmentService.AssessCapabilities = assess_capabilities
 
 
+def _install_trigger_acknowledgement_observer() -> None:
+    """Record terminal acknowledgements and optionally discard them."""
+    drop_acknowledgements = (
+        os.environ.get("STATEFORGE_TEST_DROP_TRIGGER_ACKS", "false") == "true"
+    )
+    original = TriggerPublicationRuntime.acknowledge
+    marker = Path(os.environ["STATEFORGE_TEST_TRIGGER_ACK_MARKER"])
+    event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
+
+    async def acknowledge(
+        runtime: TriggerPublicationRuntime,
+        lease: TriggerStreamLease,
+        acknowledgement: trigger_publication_pb2.TriggerAcknowledgement,
+        *,
+        is_session_current: Callable[[str], bool],
+    ) -> None:
+        disposition = (
+            trigger_publication_pb2.TriggerAcknowledgementDisposition.Name(
+                acknowledgement.disposition
+            )
+            .removeprefix("TRIGGER_ACKNOWLEDGEMENT_DISPOSITION_")
+            .lower()
+        )
+        if drop_acknowledgements and not await asyncio.to_thread(
+            marker.exists
+        ):
+            _record_event(
+                event_log,
+                "trigger-ack-dropped:"
+                f"{acknowledgement.publication_id}:{disposition}",
+            )
+            return
+        await original(
+            runtime,
+            lease,
+            acknowledgement,
+            is_session_current=is_session_current,
+        )
+        _record_event(
+            event_log,
+            "trigger-ack-observed:"
+            f"{acknowledgement.publication_id}:{disposition}",
+        )
+
+    TriggerPublicationRuntime.acknowledge = acknowledge
+
+
+def _install_first_trigger_publication_id() -> None:
+    """Force only the first fixture publication to a deterministic UUID."""
+    configured = os.environ.get(
+        "STATEFORGE_TEST_FIRST_TRIGGER_PUBLICATION_ID",
+        "",
+    )
+    if not configured:
+        return
+    first_publication_id = UUID(configured)
+    original = trigger_publication_runtime.uuid4
+    pending = True
+
+    def next_publication_id() -> UUID:
+        nonlocal pending
+        if pending:
+            pending = False
+            return first_publication_id
+        return original()
+
+    trigger_publication_runtime.uuid4 = next_publication_id
+
+
 def main() -> None:
     """Run the Provider fixture until its service manager stops it."""
     _install_capability_unavailable_once()
+    _install_trigger_acknowledgement_observer()
+    _install_first_trigger_publication_id()
     ManifestFixtureProvider(
         discovery_directory=Path(
             os.environ["STATEFORGE_TEST_DISCOVERY_DIRECTORY"]
