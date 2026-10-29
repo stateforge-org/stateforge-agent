@@ -18,6 +18,7 @@ from stateforge_agent._config.models import (
     LoggingConfiguration,
     ProviderConfiguration,
 )
+from stateforge_agent._journal import SqliteJournal
 from stateforge_agent._process import ProcessExitCode
 from stateforge_agent._runtime import daemon
 from stateforge_agent._runtime.daemon import (
@@ -198,19 +199,39 @@ async def test_agent_runtime_starts_and_stops_cleanly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    selected_backends: list[tuple[JournalConfiguration, Path]] = []
+    create_journal = daemon.create_journal
+
     def stop_after_start(loop, stop_event):
         loop.call_soon(stop_event.set)
         return ()
 
+    def record_backend(
+        configuration: JournalConfiguration,
+        *,
+        state_directory: Path,
+    ):
+        selected_backends.append((configuration, state_directory))
+        return create_journal(
+            configuration,
+            state_directory=state_directory,
+        )
+
     monkeypatch.setattr(daemon, "_install_signal_handlers", stop_after_start)
+    monkeypatch.setattr(daemon, "create_journal", record_backend)
+
+    runtime_layout = _runtime_layout(tmp_path)
 
     assert (
         await daemon._run_agent(
             _configuration(tmp_path),
-            _runtime_layout(tmp_path),
+            runtime_layout,
         )
         is ProcessExitCode.SUCCESS
     )
+    assert selected_backends == [
+        (_configuration(tmp_path).journal, runtime_layout.state_directory)
+    ]
 
 
 def test_run_agent_returns_daemon_result(
@@ -269,8 +290,9 @@ async def test_corrupt_journal_returns_runtime_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layout = _runtime_layout(tmp_path)
-    layout.journal_path.parent.mkdir(parents=True)
-    layout.journal_path.write_bytes(b"not a SQLite database")
+    journal_path = SqliteJournal.database_path(layout.state_directory)
+    journal_path.parent.mkdir(parents=True)
+    journal_path.write_bytes(b"not a SQLite database")
     monkeypatch.setattr(daemon, "_install_signal_handlers", lambda *_: ())
 
     result = await daemon._run_agent(_configuration(tmp_path), layout)
@@ -284,8 +306,9 @@ async def test_incompatible_trigger_schema_returns_runtime_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layout = _runtime_layout(tmp_path)
-    layout.journal_path.parent.mkdir(parents=True)
-    connection = sqlite3.connect(layout.journal_path)
+    journal_path = SqliteJournal.database_path(layout.state_directory)
+    journal_path.parent.mkdir(parents=True)
+    connection = sqlite3.connect(journal_path)
     try:
         connection.execute(
             """

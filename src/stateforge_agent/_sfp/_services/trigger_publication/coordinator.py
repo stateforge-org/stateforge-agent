@@ -16,7 +16,7 @@ from stateforge_protocol.sfp.trigger_publication.v1 import (
     validation,
 )
 
-from stateforge_agent._journal import SqliteJournalError
+from stateforge_agent._journal import JournalError
 from stateforge_agent._sfp._services.trigger_publication.client import (
     SfpTriggerPublicationProtocolError,
     TriggerPublicationClient,
@@ -143,7 +143,7 @@ class TriggerPublicationCoordinator:
                 ),
                 publication,
             )
-        except SqliteJournalError:
+        except JournalError:
             return _rejection(
                 publication,
                 trigger_publication_pb2.TRIGGER_REJECTION_REASON_DELIVERY_RESPONSIBILITY_UNAVAILABLE,

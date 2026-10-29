@@ -7,7 +7,16 @@ import os
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar
+from typing import Self, TypeVar
+
+from stateforge_agent._config.models import JournalConfiguration
+from stateforge_agent._journal.base import Journal, JournalError
+from stateforge_agent._journal.sqlite_trigger_publications import (
+    SqliteTriggerPublicationStore,
+)
+from stateforge_agent._sfp._services.trigger_publication.store import (
+    TriggerPublicationStore,
+)
 
 _Result = TypeVar("_Result")
 _BUSY_TIMEOUT_MILLISECONDS = 5000
@@ -15,12 +24,30 @@ _JOURNAL_DIRECTORY_MODE = 0o700
 _JOURNAL_FILE_MODE = 0o600
 
 
-class SqliteJournalError(RuntimeError):
+class SqliteJournalError(JournalError):
     """Report that the Agent journal could not complete an operation."""
 
 
-class SqliteJournal:
+class SqliteJournal(Journal):
     """Own one bounded SQLite transaction boundary for Agent state."""
+
+    backend = "sqlite"
+
+    @classmethod
+    def from_configuration(
+        cls,
+        configuration: JournalConfiguration,
+        *,
+        state_directory: Path,
+    ) -> Self:
+        """Construct SQLite storage under the Agent-owned state directory."""
+        del configuration
+        return cls(cls.database_path(state_directory))
+
+    @staticmethod
+    def database_path(state_directory: Path) -> Path:
+        """Return SQLite's backend-specific database path."""
+        return state_directory / "journal" / "agent.db"
 
     def __init__(self, path: Path) -> None:
         """Bind the journal to its platform-owned persistent path."""
@@ -65,6 +92,17 @@ class SqliteJournal:
         """Reject future transactions after current work has finished."""
         async with self._lock:
             self._opened = False
+
+    def trigger_publications(
+        self,
+        *,
+        maximum_pending_publications: int,
+    ) -> TriggerPublicationStore:
+        """Create the SQLite Trigger Publication adapter."""
+        return SqliteTriggerPublicationStore(
+            self,
+            maximum_pending_publications=maximum_pending_publications,
+        )
 
     def _prepare(self) -> None:
         """Prepare the directory and durable SQLite mode synchronously."""

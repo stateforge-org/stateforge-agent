@@ -146,6 +146,11 @@ def test_rejects_unknown_key_with_defining_source(tmp_path: Path) -> None:
             'ca_certificate = "etc/pki/tls/certs/ca-bundle.crt"',
             "must be an absolute path",
         ),
+        (
+            'backend = "sqlite"',
+            'backend = "unknown"',
+            "must be one of: sqlite",
+        ),
     ],
 )
 def test_rejects_invalid_values(

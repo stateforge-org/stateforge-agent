@@ -56,8 +56,7 @@ async def _store(
 ) -> tuple[SqliteJournal, TriggerPublicationStore]:
     journal = SqliteJournal(path)
     await journal.open()
-    store = TriggerPublicationStore(
-        journal,
+    store = journal.trigger_publications(
         maximum_pending_publications=capacity,
     )
     await store.initialize()

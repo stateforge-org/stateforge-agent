@@ -23,7 +23,6 @@ from stateforge_agent._config.errors import (
 from stateforge_agent._config.models import (
     AgentConfiguration,
     ControlPlaneConfiguration,
-    JournalBackend,
     JournalConfiguration,
     LogDestination,
     LogFormat,
@@ -31,6 +30,7 @@ from stateforge_agent._config.models import (
     LogLevel,
     ProviderConfiguration,
 )
+from stateforge_agent._journal.registry import JOURNAL_BACKENDS
 
 ConfigValue: TypeAlias = (
     str | int | float | bool | list["ConfigValue"] | dict[str, "ConfigValue"]
@@ -407,7 +407,10 @@ def _validate_configuration(
             "providers.reconnect_initial_delay_seconds",
         )
 
-    journal_backend = validator.choice(("journal", "backend"), {"sqlite"})
+    journal_backend = validator.choice(
+        ("journal", "backend"),
+        set(JOURNAL_BACKENDS.backend_names),
+    )
     maximum_pending_trigger_publications = validator.positive_integer(
         ("journal", "maximum_pending_trigger_publications")
     )
@@ -437,7 +440,7 @@ def _validate_configuration(
             trigger_max_in_flight_publications=trigger_max_in_flight,
         ),
         journal=JournalConfiguration(
-            backend=cast(JournalBackend, journal_backend),
+            backend=journal_backend,
             maximum_pending_trigger_publications=(
                 maximum_pending_trigger_publications
             ),

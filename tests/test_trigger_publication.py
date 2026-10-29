@@ -298,8 +298,7 @@ async def _coordinator(
 ]:
     journal = SqliteJournal(path)
     await journal.open()
-    store = TriggerPublicationStore(
-        journal,
+    store = journal.trigger_publications(
         maximum_pending_publications=capacity,
     )
     await store.initialize()
@@ -762,8 +761,7 @@ async def test_storage_failure_before_commit_is_retryable_and_not_accepted(
     assert acknowledgement.rejection.retryable
     restarted_journal = SqliteJournal(path)
     await restarted_journal.open()
-    restarted_store = TriggerPublicationStore(
-        restarted_journal,
+    restarted_store = restarted_journal.trigger_publications(
         maximum_pending_publications=10,
     )
     await restarted_store.initialize()

@@ -13,7 +13,7 @@ LogLevel: TypeAlias = Literal[
 ]
 LogFormat: TypeAlias = Literal["text", "json"]
 LogDestination: TypeAlias = Literal["stderr"]
-JournalBackend: TypeAlias = Literal["sqlite"]
+JournalBackendName: TypeAlias = str
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +40,7 @@ class ProviderConfiguration:
 class JournalConfiguration:
     """Durable Agent journal settings."""
 
-    backend: JournalBackend
+    backend: JournalBackendName
     maximum_pending_trigger_publications: int
 
 

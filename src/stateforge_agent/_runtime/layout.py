@@ -17,11 +17,6 @@ class RuntimeLayout:
         return self.state_directory / "staging"
 
     @property
-    def journal_path(self) -> Path:
-        """Return the path of the durable Agent journal database."""
-        return self.state_directory / "journal" / "agent.db"
-
-    @property
     def control_socket_path(self) -> Path:
         """Return the path of the local Agent control socket."""
         return self.runtime_directory / "control.sock"

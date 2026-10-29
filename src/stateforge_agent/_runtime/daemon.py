@@ -14,7 +14,7 @@ from stateforge_protocol.sfp.endpoint_discovery.v1 import (
 
 from stateforge_agent import __version__
 from stateforge_agent._config.models import AgentConfiguration
-from stateforge_agent._journal import SqliteJournal, SqliteJournalError
+from stateforge_agent._journal import JournalError, create_journal
 from stateforge_agent._process import ProcessExitCode
 from stateforge_agent._runtime.layout import (
     SYSTEM_RUNTIME_LAYOUT,
@@ -41,9 +41,6 @@ from stateforge_agent._sfp._runtime.discovery import (
 )
 from stateforge_agent._sfp._services.trigger_publication.coordinator import (
     TriggerPublicationCoordinator,
-)
-from stateforge_agent._sfp._services.trigger_publication.store import (
-    TriggerPublicationStore,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,9 +71,11 @@ async def _run_agent(
     monitor = ProviderDirectoryMonitor(
         runtime_layout.provider_discovery_directory
     )
-    journal = SqliteJournal(runtime_layout.journal_path)
-    trigger_store = TriggerPublicationStore(
-        journal,
+    journal = create_journal(
+        configuration.journal,
+        state_directory=runtime_layout.state_directory,
+    )
+    trigger_store = journal.trigger_publications(
         maximum_pending_publications=(
             configuration.journal.maximum_pending_trigger_publications
         ),
@@ -84,7 +83,7 @@ async def _run_agent(
     try:
         await journal.open()
         await trigger_store.initialize()
-    except SqliteJournalError:
+    except JournalError:
         _LOGGER.exception("Agent journal initialization failed")
         for installed_signal in installed_signals:
             loop.remove_signal_handler(installed_signal)

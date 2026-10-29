@@ -118,11 +118,15 @@ there; the Agent does not use this directory for Provider-specific data.
 
 | Field | Type | Packaged value | Validation and purpose |
 | --- | --- | --- | --- |
-| `backend` | String | `sqlite` | Durable journal backend. `sqlite` is the only value supported by schema version 1. |
+| `backend` | String | `sqlite` | Selects the durable journal implementation. `sqlite` selects the bundled SQLite implementation and is the only backend shipped in schema version 1. |
 | `maximum_pending_trigger_publications` | Integer | `10000` | Maximum accepted trigger publications retained for later SF-AOP forwarding. Must be greater than zero. When full, new publications receive a retryable capacity rejection. |
 
 The journal database is stored at the package-owned path
 `/var/lib/stateforge-agent/journal/agent.db`.
+
+Journal implementations conform to storage-neutral Agent contracts. Runtime
+services do not depend on SQLite classes or SQL; another backend can supply its
+own journal and durable service stores under a different backend name.
 
 The selected Backup Engine does not belong in this section. Backup Engines are
 operation tools selected through Control Plane policy rather than global Agent
