@@ -7,9 +7,8 @@ import os
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import Self, TypeVar
+from typing import TYPE_CHECKING, Self, TypeVar
 
-from stateforge_agent._config.models import JournalConfiguration
 from stateforge_agent._journal.base import Journal, JournalError
 from stateforge_agent._journal.sqlite_trigger_publications import (
     SqliteTriggerPublicationStore,
@@ -17,6 +16,9 @@ from stateforge_agent._journal.sqlite_trigger_publications import (
 from stateforge_agent._sfp._services.trigger_publication.store import (
     TriggerPublicationStore,
 )
+
+if TYPE_CHECKING:
+    from stateforge_agent._config.models import JournalConfiguration
 
 _Result = TypeVar("_Result")
 _BUSY_TIMEOUT_MILLISECONDS = 5000

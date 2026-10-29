@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from stateforge_agent._config.models import JournalConfiguration
 from stateforge_agent._journal.base import Journal
 from stateforge_agent._journal.sqlite import SqliteJournal
+
+if TYPE_CHECKING:
+    from stateforge_agent._config.models import JournalConfiguration
 
 
 class JournalBackendRegistry:
