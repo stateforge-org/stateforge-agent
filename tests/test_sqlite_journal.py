@@ -3,6 +3,7 @@
 import errno
 import os
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,12 @@ from stateforge_agent._journal import sqlite as sqlite_journal
 
 _LARGE_PAYLOAD_BYTES = 1024 * 1024
 _SHORT_BUSY_TIMEOUT_MILLISECONDS = 1
+_OWNER_ONLY_FILE_MODE = 0o600
+
+
+def _file_mode(path: Path) -> int:
+    """Return only the permission bits for a filesystem path."""
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 async def _open_journal(path: Path) -> SqliteJournal:
@@ -32,6 +39,38 @@ def _payload_count(connection: sqlite3.Connection) -> int:
     if row is None:
         raise sqlite3.DatabaseError("Payload count is absent")
     return int(row[0])
+
+
+@pytest.mark.asyncio
+async def test_open_creates_owner_only_journal(tmp_path: Path) -> None:
+    path = tmp_path / "journal" / "agent.db"
+    journal = SqliteJournal(path)
+
+    await journal.open()
+
+    assert _file_mode(path) == _OWNER_ONLY_FILE_MODE
+    assert await journal.transaction(
+        lambda _: (
+            _file_mode(Path(f"{path}-wal")),
+            _file_mode(Path(f"{path}-shm")),
+        )
+    ) == (_OWNER_ONLY_FILE_MODE, _OWNER_ONLY_FILE_MODE)
+    await journal.close()
+
+
+@pytest.mark.asyncio
+async def test_open_restricts_existing_permissive_journal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "agent.db"
+    sqlite3.connect(path).close()
+    path.chmod(0o640)
+    journal = SqliteJournal(path)
+
+    await journal.open()
+
+    assert _file_mode(path) == _OWNER_ONLY_FILE_MODE
+    await journal.close()
 
 
 @pytest.mark.asyncio
@@ -80,7 +119,7 @@ async def test_read_only_journal_rejects_writes_without_partial_state(
         assert isinstance(captured.value.__cause__, sqlite3.OperationalError)
     finally:
         path.parent.chmod(0o750)
-        path.chmod(0o640)
+        path.chmod(_OWNER_ONLY_FILE_MODE)
 
     assert await journal.transaction(_payload_count) == 0
     await journal.close()

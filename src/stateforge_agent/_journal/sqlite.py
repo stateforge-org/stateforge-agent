@@ -11,6 +11,7 @@ from typing import TypeVar
 
 _Result = TypeVar("_Result")
 _BUSY_TIMEOUT_MILLISECONDS = 5000
+_JOURNAL_FILE_MODE = 0o600
 
 
 class SqliteJournalError(RuntimeError):
@@ -67,12 +68,25 @@ class SqliteJournal:
     def _prepare(self) -> None:
         """Prepare the directory and durable SQLite mode synchronously."""
         self._path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+        self._secure_database_file()
         connection = self._connect()
         try:
             connection.execute("PRAGMA journal_mode = WAL")
         finally:
             connection.close()
-        os.chmod(self._path, 0o640)
+
+    def _secure_database_file(self) -> None:
+        """Create or restrict the database before SQLite creates sidecars."""
+        try:
+            descriptor = os.open(
+                self._path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                _JOURNAL_FILE_MODE,
+            )
+        except FileExistsError:
+            os.chmod(self._path, _JOURNAL_FILE_MODE)
+        else:
+            os.close(descriptor)
 
     def _transact(
         self,
