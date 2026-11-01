@@ -140,10 +140,12 @@ The installed-system workflow currently runs twelve isolated scenarios:
 - triggers: a real Provider wheel publishes through both the decorated and
   callback author APIs; the installed Agent validates and journals the events,
   survives an Agent service restart, and returns a terminal acknowledgement;
-- operations: the installed Agent durably creates one immutable admission
-  intent against a real Provider Python service, survives a deliberately lost
-  successful response, retries the same identity, proves exactly-once Provider
-  dispatch, resolves the existing record, and retains it across Agent restart;
+- operations: two real Provider Python services prove simultaneous isolation,
+  durable immutable intents, deliberately lost successful responses,
+  same-identity retry and exactly-once dispatch. The scenario also replaces a
+  Provider generation, performs resolve-only recovery without redispatch,
+  retains unprovable work as unresolved across Agent restart, and rejects any
+  sensitive payload value found in journals or retained evidence;
 - adversarial: malformed discovery data is rejected without stopping the Agent;
 - destructive: the exact RPM is removed, installed again in a clean environment,
   and completes manifest exchange after reinstallation.
@@ -169,7 +171,7 @@ digest of each generated wheel.
 | `agent/assert-capability-assessment` | Use the RPM-installed Agent package to collect and verify normalized evidence from a separate real Provider process. |
 | `agent/assert-capability-boundary` | Exercise timeout, malformed response, stale response-fence, and byte-limit behavior through the RPM-installed client. |
 | `agent/assert-trigger-publication` | Validate canonical, durable Provider publication evidence in the installed Agent journal. |
-| `agent/assert-operation-admission` | Verify local preflight, durable intent, retry identity, real Provider idempotency, exactly-once dispatch, and restart persistence. |
+| `agent/assert-operation-admission` | Verify local preflight, multi-Provider isolation, durable intent, retry identity, real Provider idempotency, generation-replacement recovery without redispatch, restart persistence, and secret-safe evidence. |
 | `agent/collect-evidence` | Capture bounded evidence, uninstall the RPM, and clean up. |
 | `provider/create-fixture` | Invoke the selected Protocol and Provider checkouts' canonical package-build actions and stage their wheels with a selected fixture. |
 | `provider/start` | Run the fixture as a separate non-root systemd service. |

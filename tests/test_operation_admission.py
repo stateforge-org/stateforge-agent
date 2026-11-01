@@ -29,6 +29,8 @@ from stateforge_agent._sfp._services.capability_assessment.models import (
     CapabilityAssessment,
     CapabilityAssessmentScope,
     CapabilityFinding,
+    CapabilityRequirement,
+    CapabilityRequirementState,
     CapabilitySupportState,
 )
 from stateforge_agent._sfp._services.manifest.declaration import (
@@ -37,12 +39,14 @@ from stateforge_agent._sfp._services.manifest.declaration import (
 from stateforge_agent._sfp._services.operation_admission.client import (
     OperationAdmissionClient,
     OperationAdmissionRequester,
+    SfpOperationAdmissionError,
     SfpOperationAdmissionLimitError,
     SfpOperationAdmissionProtocolError,
     SfpOperationAdmissionRejectedError,
     SfpOperationAdmissionStaleError,
     SfpOperationAdmissionUnavailableError,
     _decode_response,
+    validate_request,
 )
 from stateforge_agent._sfp._services.operation_admission.coordinator import (
     OperationAdmissionCapacityError,
@@ -55,9 +59,11 @@ from stateforge_agent._sfp._services.operation_admission.models import (
     OperationAdmissionDisposition,
     OperationAdmissionRequest,
     OperationAdmissionResult,
+    OperationRejection,
 )
 from stateforge_agent._sfp._services.operation_admission.store import (
     OperationAdmissionStore,
+    OperationAttemptState,
 )
 
 _PROVIDER_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
@@ -81,8 +87,7 @@ class _ScriptedClient(OperationAdmissionRequester):
     def __init__(
         self,
         steps: list[
-            OperationAdmissionDisposition
-            | SfpOperationAdmissionUnavailableError
+            OperationAdmissionDisposition | SfpOperationAdmissionError
         ],
     ) -> None:
         self.steps = steps
@@ -567,6 +572,273 @@ async def test_transport_exhaustion_reports_same_unresolved_identity(
 
 
 @pytest.mark.asyncio
+async def test_retryable_rejection_reuses_identity_then_succeeds(
+    tmp_path: Path,
+) -> None:
+    rejection = OperationRejection(
+        operation_id=None,
+        reason="ADMISSION_ERROR_REASON_PROVIDER_CAPACITY_EXHAUSTED",
+        retryable=True,
+        retry_after=None,
+        explanation="Provider capacity is temporarily exhausted.",
+        grpc_status=grpc.StatusCode.RESOURCE_EXHAUSTED.name,
+    )
+    client = _ScriptedClient(
+        [
+            SfpOperationAdmissionRejectedError(rejection),
+            OperationAdmissionDisposition.ACCEPTED_NEW,
+        ]
+    )
+    journal, coordinator, _ = await _coordinator(tmp_path / "agent.db", client)
+    lease = _lease()
+    try:
+        result = await coordinator.admit(
+            lease,
+            _request(),
+            _assessment(lease),
+            assert_current=_current,
+        )
+    finally:
+        await journal.close()
+
+    assert result.disposition is OperationAdmissionDisposition.ACCEPTED_NEW
+    assert len(client.requests) == _LOST_RESPONSE_CALL_COUNT
+    assert (
+        client.requests[0].invocation.operation_id
+        == client.requests[1].invocation.operation_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_rejection_is_durable_and_not_retried(
+    tmp_path: Path,
+) -> None:
+    rejection = OperationRejection(
+        operation_id=None,
+        reason="ADMISSION_ERROR_REASON_PROVIDER_UNAVAILABLE",
+        retryable=False,
+        retry_after=None,
+        explanation="Provider is draining.",
+        grpc_status=grpc.StatusCode.FAILED_PRECONDITION.name,
+    )
+    client = _ScriptedClient([SfpOperationAdmissionRejectedError(rejection)])
+    journal, coordinator, store = await _coordinator(
+        tmp_path / "agent.db", client
+    )
+    lease = _lease()
+    try:
+        with pytest.raises(SfpOperationAdmissionRejectedError) as captured:
+            await coordinator.admit(
+                lease,
+                _request(),
+                _assessment(lease),
+                assert_current=_current,
+            )
+        assert captured.value.rejection.operation_id is None
+        operation_id = UUID(client.requests[0].invocation.operation_id)
+        attempts = await store.unresolved()
+        assert attempts == ()
+        rejected = await store.get(_PROVIDER_ID, operation_id)
+        with pytest.raises(SfpOperationAdmissionRejectedError):
+            await coordinator.submit(
+                lease,
+                operation_id,
+                _assessment(lease),
+                assert_current=_current,
+            )
+    finally:
+        await journal.close()
+
+    assert rejected is not None
+    assert rejected.state is OperationAttemptState.REJECTED
+    assert rejected.rejection is not None
+    assert rejected.rejection.reason == rejection.reason
+    assert not rejected.rejection.retryable
+    assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_execution_deadline_never_contacts_provider(
+    tmp_path: Path,
+) -> None:
+    client = _ScriptedClient([])
+    journal, coordinator, store = await _coordinator(
+        tmp_path / "agent.db", client
+    )
+    lease = _lease()
+    request = replace(
+        _request(),
+        execution_deadline=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    try:
+        with pytest.raises(SfpOperationAdmissionRejectedError):
+            await coordinator.admit(
+                lease,
+                request,
+                _assessment(lease),
+                assert_current=_current,
+            )
+        unresolved = await store.unresolved()
+    finally:
+        await journal.close()
+
+    assert unresolved == ()
+    assert client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_post_accept_storage_failure_leaves_identity_unresolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _ScriptedClient([OperationAdmissionDisposition.ACCEPTED_NEW])
+    journal, coordinator, store = await _coordinator(
+        tmp_path / "agent.db", client
+    )
+
+    async def fail_to_record(result: OperationAdmissionResult):
+        del result
+        raise JournalError("accepted result could not be stored")
+
+    monkeypatch.setattr(store, "record_accepted", fail_to_record)
+    lease = _lease()
+    try:
+        with pytest.raises(OperationAdmissionUnresolvedError) as captured:
+            await coordinator.admit(
+                lease,
+                _request(),
+                _assessment(lease),
+                assert_current=_current,
+            )
+        attempt = await store.get(_PROVIDER_ID, captured.value.operation_id)
+    finally:
+        await journal.close()
+
+    assert attempt is not None
+    assert attempt.state is OperationAttemptState.UNRESOLVED
+    assert attempt.result is None
+    assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stale_after_call",
+    [2, 4],
+    ids=["after-intent-before-transport", "after-response-before-commit"],
+)
+async def test_currentness_changes_cannot_become_authoritative(
+    tmp_path: Path,
+    stale_after_call: int,
+) -> None:
+    client = _ScriptedClient([OperationAdmissionDisposition.ACCEPTED_NEW])
+    journal, coordinator, store = await _coordinator(
+        tmp_path / f"agent-{stale_after_call}.db", client
+    )
+    calls = 0
+
+    async def current(lease: OperationAdmissionLease) -> None:
+        nonlocal calls
+        del lease
+        calls += 1
+        if calls == stale_after_call:
+            raise SfpOperationAdmissionStaleError("session changed")
+
+    lease = _lease()
+    try:
+        with pytest.raises(SfpOperationAdmissionStaleError):
+            await coordinator.admit(
+                lease,
+                _request(),
+                _assessment(lease),
+                assert_current=current,
+            )
+        unresolved = await store.unresolved()
+    finally:
+        await journal.close()
+
+    assert len(unresolved) == 1
+    assert unresolved[0].result is None
+    assert len(client.requests) == (
+        0 if stale_after_call == _LOST_RESPONSE_CALL_COUNT else 1
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence_case",
+    [
+        "unsupported",
+        "indeterminate",
+        "unsatisfied-requirement",
+        "stale-scope",
+        "wrong-operation",
+        "wrong-context",
+    ],
+)
+async def test_assessment_must_exactly_support_admission_scope(
+    tmp_path: Path,
+    evidence_case: str,
+) -> None:
+    client = _ScriptedClient([])
+    journal, coordinator, store = await _coordinator(
+        tmp_path / f"agent-{evidence_case}.db", client
+    )
+    lease = _lease()
+    assessment = _assessment(lease)
+    finding = assessment.findings[0]
+    if evidence_case == "unsupported":
+        finding = replace(
+            finding,
+            support_state=CapabilitySupportState.UNSUPPORTED,
+        )
+    elif evidence_case == "indeterminate":
+        finding = replace(
+            finding,
+            support_state=CapabilitySupportState.INDETERMINATE,
+        )
+    elif evidence_case == "unsatisfied-requirement":
+        finding = replace(
+            finding,
+            support_state=CapabilitySupportState.SUPPORTED_WITH_REQUIREMENTS,
+            requirements=(
+                CapabilityRequirement(
+                    identifier="runtime.target.readable",
+                    state=CapabilityRequirementState.UNSATISFIED,
+                    description="Target is not readable.",
+                    version_constraint="",
+                ),
+            ),
+        )
+    elif evidence_case == "wrong-operation":
+        finding = replace(
+            finding,
+            operation_identifier="stateforge.test/other@1",
+        )
+    scope = assessment.scope
+    if evidence_case == "stale-scope":
+        scope = replace(
+            scope, endpoint_generation=scope.endpoint_generation + 1
+        )
+    elif evidence_case == "wrong-context":
+        scope = replace(scope, execution_context_sha256=b"\x00" * 32)
+    assessment = replace(assessment, scope=scope, findings=(finding,))
+    try:
+        with pytest.raises(OperationAdmissionPreconditionError):
+            await coordinator.admit(
+                lease,
+                _request(),
+                assessment,
+                assert_current=_current,
+            )
+        unresolved = await store.unresolved()
+    finally:
+        await journal.close()
+
+    assert unresolved == ()
+    assert client.requests == []
+
+
+@pytest.mark.asyncio
 async def test_wire_client_normalizes_a_canonical_success() -> None:
     async def handler(request, context):
         del context
@@ -681,6 +953,55 @@ async def test_wire_client_rejects_oversized_response_before_decoding() -> (
     server, channel = await _start_admission_server(handler)
     try:
         with pytest.raises(SfpOperationAdmissionLimitError):
+            await OperationAdmissionClient().start(channel, _wire_request())
+    finally:
+        await channel.close()
+        await server.stop(grace=None)
+
+
+def test_wire_client_rejects_oversized_request_before_transport() -> None:
+    request = _wire_request()
+    request.invocation.payload["oversized"] = "x" * contract.MAX_REQUEST_BYTES
+
+    with pytest.raises(SfpOperationAdmissionLimitError):
+        validate_request(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        "provider-instance",
+        "endpoint-generation",
+        "session",
+        "manifest-revision",
+        "operation-id",
+        "fingerprint",
+    ],
+)
+async def test_wire_client_rejects_mismatched_success_correlation(
+    mismatch: str,
+) -> None:
+    async def handler(request, context):
+        del context
+        response = _wire_response(request)
+        if mismatch == "provider-instance":
+            response.provider_instance_id = str(uuid4())
+        elif mismatch == "endpoint-generation":
+            response.endpoint_generation += 1
+        elif mismatch == "session":
+            response.session_id = "foreign-session"
+        elif mismatch == "manifest-revision":
+            response.manifest_revision = "sha256:" + ("b" * 64)
+        elif mismatch == "operation-id":
+            response.record.operation_id = str(uuid4())
+        elif mismatch == "fingerprint":
+            response.record.request_fingerprint = "sha256:" + ("b" * 64)
+        return response
+
+    server, channel = await _start_admission_server(handler)
+    try:
+        with pytest.raises(SfpOperationAdmissionProtocolError):
             await OperationAdmissionClient().start(channel, _wire_request())
     finally:
         await channel.close()

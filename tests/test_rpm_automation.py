@@ -10,7 +10,8 @@ SHA_LENGTH = 40
 DEPENDENCY_COUNT = 2
 HEALTH_SCENARIO_PROVIDER_COUNT = 3
 MANIFEST_ASSERTION_COUNT = 6
-AVAILABILITY_ASSERTION_COUNT = 11
+AVAILABILITY_ASSERTION_COUNT = 12
+OPERATION_PROVIDER_COUNT = 2
 
 
 def read(path: Path) -> str:
@@ -665,8 +666,22 @@ def test_installed_operation_admission_uses_real_idempotent_dispatch() -> None:
     assert "./.github/actions/provider/start" in scenario
     assert "./.github/actions/agent/assert-availability" in scenario
     assert "./.github/actions/agent/assert-operation-admission" in scenario
+    assert (
+        scenario.count("./.github/actions/provider/start")
+        == OPERATION_PROVIDER_COUNT
+    )
     assert 'operation-drop-response-once: "true"' in scenario
-    assert "provider-identity: stateforge.test.operation_admission" in scenario
+    assert (
+        "provider-identity: stateforge.test.operation_admission_primary"
+        in scenario
+    )
+    assert (
+        "provider-identity: stateforge.test.operation_admission_secondary"
+        in scenario
+    )
+    assert "secondary-provider-instance-id" in scenario
+    assert "provider-unit-name" in scenario
+    assert "Reject sensitive operation evidence" in scenario
     assert "STATEFORGE_TEST_OPERATION_DROP_RESPONSE_ONCE" in provider_start
     assert "OperationAdmissionService.StartOperation" in fixture
     assert "response = await original(service, request, context)" in fixture
@@ -679,10 +694,16 @@ def test_installed_operation_admission_uses_real_idempotent_dispatch() -> None:
     assert "SqliteJournal" in assertion
     assert "admit_operation" in assertion
     assert "RESOLVED_EXISTING" in assertion
-    assert '_events(path).count("operation:inspect") == 1' in assertion
+    assert "asyncio.gather" in assertion
+    assert "multi_provider_isolation" in assertion
+    assert "drop-next-operation-response" in assertion
+    assert "resolve_operation" in assertion
+    assert "operation-admission-mode:resolve_only" in assertion
+    assert "Replacement generation redispatched prior work" in assertion
+    assert "secret_safe_evidence" in assertion
     assert '"restart",' in assertion
-    assert "_AGENT_UNIT," in assertion
-    assert "Agent restart lost the admission record" in assertion
+    assert "_restart_unit(_AGENT_UNIT)" in assertion
+    assert "Agent restart lost the unresolved admission record" in assertion
     assert "request_identity_preserved" in assertion
     assert 'version("stateforge-protocol")' in assertion
     assert 'version("stateforge-provider")' in assertion

@@ -313,18 +313,20 @@ def _install_capability_unavailable_once() -> None:
 
 
 def _install_operation_response_loss_once() -> None:
-    """Drop the first response only after the real Provider admits work."""
-    if (
+    """Observe admission and optionally lose a post-dispatch response."""
+    original = OperationAdmissionService.StartOperation
+    drop_response = (
         os.environ.get(
             "STATEFORGE_TEST_OPERATION_DROP_RESPONSE_ONCE",
             "false",
         )
-        != "true"
-    ):
-        return
-    original = OperationAdmissionService.StartOperation
-    drop_response = True
+        == "true"
+    )
     event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
+    drop_marker = (
+        Path(os.environ["STATEFORGE_TEST_STATE_DIRECTORY"])
+        / "drop-next-operation-response"
+    )
 
     async def start_operation(
         service: OperationAdmissionService,
@@ -338,6 +340,16 @@ def _install_operation_response_loss_once() -> None:
         digest = hashlib.sha256(
             request.SerializeToString(deterministic=True)
         ).hexdigest()
+        _record_event(
+            event_log,
+            f"{_OPERATION_ADMISSION_ATTEMPT_PREFIX}{digest}",
+        )
+        mode = (
+            operation_admission_pb2.AdmissionMode.Name(request.admission_mode)
+            .removeprefix("ADMISSION_MODE_")
+            .lower()
+        )
+        _record_event(event_log, f"operation-admission-mode:{mode}")
         response = await original(service, request, context)
         disposition = (
             operation_admission_pb2.AdmissionDisposition.Name(
@@ -346,12 +358,11 @@ def _install_operation_response_loss_once() -> None:
             .removeprefix("ADMISSION_DISPOSITION_")
             .lower()
         )
-        _record_event(
-            event_log,
-            f"{_OPERATION_ADMISSION_ATTEMPT_PREFIX}{digest}",
-        )
-        if drop_response:
+        marker_armed = drop_marker.exists()
+        if drop_response or marker_armed:
             drop_response = False
+            if marker_armed:
+                drop_marker.unlink()
             _record_event(
                 event_log,
                 f"operation-admission-response:dropped:{disposition}",

@@ -92,16 +92,22 @@ are not copied into logs, exception text, or CI evidence.
 ## Installed verification
 
 The installed-system scenario builds the Agent RPM and exact Protocol and
-Provider wheels, then starts the packaged Agent and a real Provider Python
-process as separate systemd services. The Provider commits and dispatches one
-operation, deliberately drops the first successful response, and returns the
-existing record when the Agent retries.
+Provider wheels, then starts the packaged Agent and two real Provider Python
+processes as separate systemd services. One Provider completes a normal
+admission while the other deliberately loses its first successful response
+and resolves the Agent's identical retry from its existing record.
 
 The scenario proves that:
 
-- malformed or undeclared requests are rejected locally;
+- malformed, undeclared, oversized, expired, or unsupported requests are
+  rejected before unsafe dispatch;
+- simultaneous admissions remain isolated to their selected Provider;
 - one immutable request is sent twice with the same operation UUID and digest;
-- the real Provider handler runs exactly once;
+- each real Provider handler runs exactly once per admitted identity;
 - the Agent receives `RESOLVED_EXISTING` after the simulated response loss;
-- the accepted record survives an Agent service restart; and
-- evidence contains identifiers and hashes, never operation payloads.
+- a lost response followed by Provider generation replacement uses
+  `RESOLVE_ONLY`, preserves the original identity, and remains unresolved when
+  the replacement process cannot prove retained state;
+- accepted and unresolved records survive an Agent service restart; and
+- journals and retained CI evidence contain identifiers and hashes, never
+  sensitive operation payload values.

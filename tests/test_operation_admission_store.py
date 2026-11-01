@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -140,6 +141,37 @@ async def test_unresolved_capacity_and_provider_identity_are_isolated(
         is OperationIntentDecision.CREATED
     )
     assert exhausted.decision is OperationIntentDecision.CAPACITY_EXHAUSTED
+
+
+@pytest.mark.asyncio
+async def test_concurrent_intent_creation_cannot_exceed_capacity(
+    tmp_path: Path,
+) -> None:
+    journal, store = await _store(tmp_path / "agent.db", capacity=1)
+    first = _invocation()
+    second = _invocation()
+    try:
+        results = await asyncio.gather(
+            store.create_intent(
+                _PROVIDER_ID,
+                first,
+                validation.compute_request_fingerprint(first),
+            ),
+            store.create_intent(
+                _PROVIDER_ID,
+                second,
+                validation.compute_request_fingerprint(second),
+            ),
+        )
+        unresolved = await store.unresolved()
+    finally:
+        await journal.close()
+
+    assert {result.decision for result in results} == {
+        OperationIntentDecision.CREATED,
+        OperationIntentDecision.CAPACITY_EXHAUSTED,
+    }
+    assert len(unresolved) == 1
 
 
 @pytest.mark.asyncio
