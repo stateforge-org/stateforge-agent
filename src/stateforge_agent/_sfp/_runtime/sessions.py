@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import UUID
 
 import grpc
+from google.protobuf.json_format import MessageToDict
 from grpc_health.v1 import health_pb2
 from stateforge_protocol.sfp import primitives
 
@@ -49,6 +50,18 @@ from stateforge_agent._sfp._services.manifest.client import (
 )
 from stateforge_agent._sfp._services.manifest.declaration import (
     ManifestDeclaration,
+)
+from stateforge_agent._sfp._services.operation_admission.client import (
+    SfpOperationAdmissionStaleError,
+)
+from stateforge_agent._sfp._services.operation_admission.coordinator import (
+    OperationAdmissionCoordinator,
+    OperationAdmissionLease,
+    OperationAdmissionPreconditionError,
+)
+from stateforge_agent._sfp._services.operation_admission.models import (
+    OperationAdmissionRequest,
+    OperationAdmissionResult,
 )
 from stateforge_agent._sfp._services.trigger_publication.client import (
     SfpTriggerPublicationError,
@@ -181,6 +194,7 @@ class ProviderSessionManager:
             CapabilityAssessmentRequester | None
         ) = None,
         trigger_publication: TriggerPublicationCoordinator | None = None,
+        operation_admission: OperationAdmissionCoordinator | None = None,
     ) -> None:
         """Create an empty Provider session registry."""
         if not isinstance(agent_runtime_id, UUID):
@@ -246,6 +260,7 @@ class ProviderSessionManager:
             client=capability_assessment_client,
         )
         self._trigger_publication = trigger_publication
+        self._operation_admission = operation_admission
         self._providers: dict[UUID, _ProviderRuntimeState] = {}
         self._closed = False
         self._lock = asyncio.Lock()
@@ -307,6 +322,113 @@ class ProviderSessionManager:
             execution_context=execution_context,
             assert_current=self._assert_capability_assessment_is_current,
         )
+
+    async def admit_operation(
+        self,
+        request: OperationAdmissionRequest,
+    ) -> OperationAdmissionResult:
+        """Preflight and submit one newly authorized generic operation."""
+        coordinator = self._operation_admission
+        if coordinator is None:
+            raise OperationAdmissionPreconditionError(
+                "Operation Admission is not configured"
+            )
+        assessment = await self.assess_capabilities(
+            request.provider_instance_id,
+            (request.operation_identifier,),
+            execution_context=request.execution_context,
+        )
+        lease = await self._operation_admission_lease(
+            request.provider_instance_id
+        )
+        return await coordinator.admit(
+            lease,
+            request,
+            assessment,
+            assert_current=self._assert_operation_admission_is_current,
+        )
+
+    async def resolve_operation(
+        self,
+        provider_instance_id: UUID,
+        operation_id: UUID,
+    ) -> OperationAdmissionResult:
+        """Resolve one durable uncertain identity through a current session."""
+        coordinator = self._operation_admission
+        if coordinator is None:
+            raise OperationAdmissionPreconditionError(
+                "Operation Admission is not configured"
+            )
+        attempt = await coordinator.attempt(provider_instance_id, operation_id)
+        if attempt is None:
+            raise OperationAdmissionPreconditionError(
+                "Operation Admission identity is not durable"
+            )
+        execution_context = MessageToDict(attempt.invocation.execution_context)
+        assessment = await self.assess_capabilities(
+            provider_instance_id,
+            (attempt.invocation.operation_identifier,),
+            execution_context=execution_context,
+        )
+        lease = await self._operation_admission_lease(provider_instance_id)
+        return await coordinator.submit(
+            lease,
+            operation_id,
+            assessment,
+            assert_current=self._assert_operation_admission_is_current,
+        )
+
+    async def _operation_admission_lease(
+        self,
+        provider_instance_id: UUID,
+    ) -> OperationAdmissionLease:
+        """Snapshot current operation declarations and availability fences."""
+        async with self._lock:
+            provider = self._providers.get(provider_instance_id)
+            if provider is None or provider.active_session is None:
+                raise OperationAdmissionPreconditionError(
+                    "Provider has no active SFP session"
+                )
+            status = provider.availability_status
+            if status is None or not status.eligible:
+                raise OperationAdmissionPreconditionError(
+                    "Provider is not available for Operation Admission"
+                )
+            session = provider.active_session
+            return OperationAdmissionLease(
+                provider_instance_id=session.provider_instance_id,
+                endpoint_generation=session.endpoint_generation,
+                session_id=session.session_id,
+                manifest_revision=session.manifest.key.revision,
+                availability_generation=provider.availability_generation,
+                operation_declarations=(
+                    session.manifest.operation_declarations
+                ),
+                channel=session._channel,
+                session_token=session,
+            )
+
+    async def _assert_operation_admission_is_current(
+        self,
+        lease: OperationAdmissionLease,
+    ) -> None:
+        """Fence one admission attempt to current session and readiness."""
+        async with self._lock:
+            provider = self._providers.get(lease.provider_instance_id)
+            if (
+                provider is None
+                or provider.active_session is not lease.session_token
+                or provider.availability_generation
+                != lease.availability_generation
+            ):
+                raise SfpOperationAdmissionStaleError(
+                    "Operation Admission session is no longer current"
+                )
+            status = provider.availability_status
+            if status is None or not status.eligible:
+                raise SfpOperationAdmissionStaleError(
+                    "Provider is no longer available for Operation Admission"
+                )
 
     async def _capability_assessment_lease(
         self,
@@ -655,6 +777,8 @@ class ProviderSessionManager:
         """Close every active Provider channel."""
         async with self._lock:
             self._closed = True
+            if self._operation_admission is not None:
+                self._operation_admission.close()
             sessions = tuple(
                 provider.active_session
                 for provider in self._providers.values()

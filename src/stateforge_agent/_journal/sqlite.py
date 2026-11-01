@@ -10,8 +10,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Self, TypeVar
 
 from stateforge_agent._journal.base import Journal, JournalError
+from stateforge_agent._journal.sqlite_operation_admissions import (
+    SqliteOperationAdmissionStore,
+)
 from stateforge_agent._journal.sqlite_trigger_publications import (
     SqliteTriggerPublicationStore,
+)
+from stateforge_agent._sfp._services.operation_admission.store import (
+    OperationAdmissionStore,
 )
 from stateforge_agent._sfp._services.trigger_publication.store import (
     TriggerPublicationStore,
@@ -104,6 +110,17 @@ class SqliteJournal(Journal):
         return SqliteTriggerPublicationStore(
             self,
             maximum_pending_publications=maximum_pending_publications,
+        )
+
+    def operation_admissions(
+        self,
+        *,
+        maximum_unresolved_attempts: int,
+    ) -> OperationAdmissionStore:
+        """Create the SQLite Operation Admission adapter."""
+        return SqliteOperationAdmissionStore(
+            self,
+            maximum_unresolved_attempts=maximum_unresolved_attempts,
         )
 
     def _prepare(self) -> None:

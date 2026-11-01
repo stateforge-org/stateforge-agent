@@ -15,6 +15,9 @@ import grpc
 from stateforge_protocol.sfp.capability_assessment.v1 import (
     capability_assessment_pb2,
 )
+from stateforge_protocol.sfp.operation_admission.v1 import (
+    operation_admission_pb2,
+)
 from stateforge_protocol.sfp.trigger_publication.v1 import (
     trigger_publication_pb2,
 )
@@ -32,6 +35,9 @@ from stateforge_provider import (
 from stateforge_provider._services.capability_assessment.service import (
     CapabilityAssessmentService,
 )
+from stateforge_provider._services.operation_admission.service import (
+    OperationAdmissionService,
+)
 from stateforge_provider._services.trigger_publication import (
     runtime as trigger_publication_runtime,
 )
@@ -41,6 +47,7 @@ from stateforge_provider._services.trigger_publication.runtime import (
 )
 
 _CAPABILITY_ATTEMPT_PREFIX = "rpc:capability-assessment:"
+_OPERATION_ADMISSION_ATTEMPT_PREFIX = "rpc:operation-admission:"
 
 
 def _record_event(path: Path, event: str) -> None:
@@ -305,6 +312,63 @@ def _install_capability_unavailable_once() -> None:
     CapabilityAssessmentService.AssessCapabilities = assess_capabilities
 
 
+def _install_operation_response_loss_once() -> None:
+    """Drop the first response only after the real Provider admits work."""
+    if (
+        os.environ.get(
+            "STATEFORGE_TEST_OPERATION_DROP_RESPONSE_ONCE",
+            "false",
+        )
+        != "true"
+    ):
+        return
+    original = OperationAdmissionService.StartOperation
+    drop_response = True
+    event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
+
+    async def start_operation(
+        service: OperationAdmissionService,
+        request: operation_admission_pb2.StartOperationRequest,
+        context: grpc.aio.ServicerContext[
+            operation_admission_pb2.StartOperationRequest,
+            operation_admission_pb2.StartOperationResponse,
+        ],
+    ) -> operation_admission_pb2.StartOperationResponse:
+        nonlocal drop_response
+        digest = hashlib.sha256(
+            request.SerializeToString(deterministic=True)
+        ).hexdigest()
+        response = await original(service, request, context)
+        disposition = (
+            operation_admission_pb2.AdmissionDisposition.Name(
+                response.disposition
+            )
+            .removeprefix("ADMISSION_DISPOSITION_")
+            .lower()
+        )
+        _record_event(
+            event_log,
+            f"{_OPERATION_ADMISSION_ATTEMPT_PREFIX}{digest}",
+        )
+        if drop_response:
+            drop_response = False
+            _record_event(
+                event_log,
+                f"operation-admission-response:dropped:{disposition}",
+            )
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                "Injected response loss after Operation Admission",
+            )
+        _record_event(
+            event_log,
+            f"operation-admission-response:returned:{disposition}",
+        )
+        return response
+
+    OperationAdmissionService.StartOperation = start_operation
+
+
 def _install_trigger_acknowledgement_observer() -> None:
     """Record terminal acknowledgements and optionally discard them."""
     drop_acknowledgements = (
@@ -377,6 +441,7 @@ def _install_first_trigger_publication_id() -> None:
 def main() -> None:
     """Run the Provider fixture until its service manager stops it."""
     _install_capability_unavailable_once()
+    _install_operation_response_loss_once()
     _install_trigger_acknowledgement_observer()
     _install_first_trigger_publication_id()
     ManifestFixtureProvider(

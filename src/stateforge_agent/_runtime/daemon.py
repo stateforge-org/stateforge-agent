@@ -39,6 +39,9 @@ from stateforge_agent._sfp._runtime.discovery import (
     ProviderDirectoryEventKind,
     ProviderDirectoryMonitor,
 )
+from stateforge_agent._sfp._services.operation_admission.coordinator import (
+    OperationAdmissionCoordinator,
+)
 from stateforge_agent._sfp._services.trigger_publication.coordinator import (
     TriggerPublicationCoordinator,
 )
@@ -80,9 +83,15 @@ async def _run_agent(
             configuration.journal.maximum_pending_trigger_publications
         ),
     )
+    operation_store = journal.operation_admissions(
+        maximum_unresolved_attempts=(
+            configuration.journal.maximum_unresolved_operation_admissions
+        ),
+    )
     try:
         await journal.open()
         await trigger_store.initialize()
+        await operation_store.initialize()
     except JournalError:
         _LOGGER.exception("Agent journal initialization failed")
         for installed_signal in installed_signals:
@@ -117,6 +126,16 @@ async def _run_agent(
             trigger_store,
             maximum_in_flight_publications=(
                 configuration.providers.trigger_max_in_flight_publications
+            ),
+        ),
+        operation_admission=OperationAdmissionCoordinator(
+            operation_store,
+            timeout_seconds=(
+                configuration.providers.operation_admission_timeout_seconds
+            ),
+            attempts=configuration.providers.operation_admission_attempts,
+            retry_initial_delay_seconds=(
+                configuration.providers.operation_admission_retry_initial_delay_seconds
             ),
         ),
     )

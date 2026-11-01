@@ -12,6 +12,9 @@ from stateforge_agent._journal import (
     SqliteJournal,
     create_journal,
 )
+from stateforge_agent._sfp._services.operation_admission.store import (
+    OperationAdmissionStore,
+)
 from stateforge_agent._sfp._services.trigger_publication.store import (
     TriggerPublicationStore,
 )
@@ -49,11 +52,20 @@ class _AlternativeJournal(Journal):
         del maximum_pending_publications
         raise NotImplementedError
 
+    def operation_admissions(
+        self,
+        *,
+        maximum_unresolved_attempts: int,
+    ) -> OperationAdmissionStore:
+        del maximum_unresolved_attempts
+        raise NotImplementedError
+
 
 def _configuration(backend: str = "sqlite") -> JournalConfiguration:
     return JournalConfiguration(
         backend=backend,
         maximum_pending_trigger_publications=10,
+        maximum_unresolved_operation_admissions=10,
     )
 
 

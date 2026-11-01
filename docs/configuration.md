@@ -32,10 +32,14 @@ health_interval_seconds = 15
 reconnect_initial_delay_seconds = 1
 reconnect_max_delay_seconds = 30
 trigger_max_in_flight_publications = 32
+operation_admission_timeout_seconds = 5
+operation_admission_attempts = 2
+operation_admission_retry_initial_delay_seconds = 1
 
 [journal]
 backend = "sqlite"
 maximum_pending_trigger_publications = 10000
+maximum_unresolved_operation_admissions = 10000
 
 [logging]
 level = "info"
@@ -109,6 +113,9 @@ does not check whether the referenced file exists during `check-config`.
 | `reconnect_initial_delay_seconds` | Integer | `1` | Initial bounded-backoff delay after a failed Provider connection. Must be greater than zero. |
 | `reconnect_max_delay_seconds` | Integer | `30` | Maximum reconnect delay. Must be greater than zero and greater than or equal to the initial delay. |
 | `trigger_max_in_flight_publications` | Integer | `32` | Requested SFP Trigger Publication receive window. Must be between 1 and the Protocol-owned maximum of 1,024. |
+| `operation_admission_timeout_seconds` | Integer | `5` | Finite deadline for one SFP Operation Admission RPC attempt. Must be greater than zero. |
+| `operation_admission_attempts` | Integer | `2` | Maximum attempts for one immutable admission identity. Must be between 1 and 5. |
+| `operation_admission_retry_initial_delay_seconds` | Integer | `1` | Initial delay for a retryable admission failure. Must be greater than zero. |
 
 The RPM creates the Provider discovery directory through `systemd-tmpfiles`.
 Provider processes publish their endpoint descriptors and Unix domain sockets
@@ -120,6 +127,7 @@ there; the Agent does not use this directory for Provider-specific data.
 | --- | --- | --- | --- |
 | `backend` | String | `sqlite` | Selects the durable journal implementation. `sqlite` selects the bundled SQLite implementation and is the only backend shipped in schema version 1. |
 | `maximum_pending_trigger_publications` | Integer | `10000` | Maximum accepted trigger publications retained for later SF-AOP forwarding. Must be greater than zero. When full, new publications receive a retryable capacity rejection. |
+| `maximum_unresolved_operation_admissions` | Integer | `10000` | Maximum durable operation intents whose remote admission outcome is not yet proven. Must be greater than zero. When full, new intents are rejected before Provider contact. |
 
 The journal database is stored at the package-owned path
 `/var/lib/stateforge-agent/journal/agent.db`.

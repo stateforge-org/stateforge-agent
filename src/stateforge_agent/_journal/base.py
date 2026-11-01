@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 if TYPE_CHECKING:
     from stateforge_agent._config.models import JournalConfiguration
+    from stateforge_agent._sfp._services.operation_admission.store import (
+        OperationAdmissionStore,
+    )
     from stateforge_agent._sfp._services.trigger_publication.store import (
         TriggerPublicationStore,
     )
@@ -47,3 +50,11 @@ class Journal(ABC):
         maximum_pending_publications: int,
     ) -> TriggerPublicationStore:
         """Create the backend's durable Trigger Publication store."""
+
+    @abstractmethod
+    def operation_admissions(
+        self,
+        *,
+        maximum_unresolved_attempts: int,
+    ) -> OperationAdmissionStore:
+        """Create the backend's durable Operation Admission store."""
