@@ -107,6 +107,7 @@ jobs:
           - capability-malformed
           - capability-mismatch
           - capability-limits
+          - operation-admission
           - provider-availability
           - trigger-publication
           - trigger-storage-failure
@@ -150,6 +151,13 @@ jobs:
         uses: ./.github/actions/rpm/test-installed/capability/boundary
         with:
           scenario: ${{ matrix.scenario }}
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          fixture-directory: dist/provider-fixture
+
+      - name: Run Operation Admission scenario
+        if: ${{ matrix.scenario == 'operation-admission' }}
+        uses: ./.github/actions/rpm/test-installed/operations/admission
+        with:
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
           fixture-directory: dist/provider-fixture
 

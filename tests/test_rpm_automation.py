@@ -10,7 +10,8 @@ SHA_LENGTH = 40
 DEPENDENCY_COUNT = 2
 HEALTH_SCENARIO_PROVIDER_COUNT = 3
 MANIFEST_ASSERTION_COUNT = 6
-AVAILABILITY_ASSERTION_COUNT = 10
+AVAILABILITY_ASSERTION_COUNT = 12
+OPERATION_PROVIDER_COUNT = 2
 
 
 def read(path: Path) -> str:
@@ -435,6 +436,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "agent/assert-availability",
         "agent/assert-capability-boundary",
         "agent/assert-capability-assessment",
+        "agent/assert-operation-admission",
         "agent/assert-trigger-publication",
         "agent/collect-evidence",
         "agent/install",
@@ -453,6 +455,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "rpm/test-installed/destructive/uninstall-reinstall",
         "rpm/test-installed/health/provider-availability",
         "rpm/test-installed/lifecycle/multiple-providers",
+        "rpm/test-installed/operations/admission",
         "rpm/test-installed/setup",
         "rpm/test-installed/smoke/manifest-exchange",
         "rpm/test-installed/triggers/publication",
@@ -508,6 +511,7 @@ def test_each_installed_scenario_is_an_independent_action() -> None:
     assert tiers == {
         "smoke",
         "lifecycle",
+        "operations",
         "health",
         "adversarial",
         "capability",
@@ -633,6 +637,79 @@ def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (
     assert "session_id" in boundary_assertion
     assert "endpoint_generation" in boundary_assertion
     assert "manifest_revision" in boundary_assertion
+
+
+def test_installed_operation_admission_uses_real_idempotent_dispatch() -> None:
+    """Keep A5 evidence on exact packages and Provider-owned execution."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario = read(
+        ACTIONS
+        / "rpm"
+        / "test-installed"
+        / "operations"
+        / "admission"
+        / "action.yml"
+    )
+    assertion_action = read(
+        ACTIONS / "agent" / "assert-operation-admission" / "action.yml"
+    )
+    assertion = read(
+        ACTIONS / "agent" / "assert-operation-admission" / "assert.py"
+    )
+    fixture = read(
+        ACTIONS / "provider" / "create-fixture" / "fixtures" / "manifest.py"
+    )
+    provider_start = read(ACTIONS / "provider" / "start" / "action.yml")
+
+    assert "operation-admission" in workflow
+    assert "./.github/actions/rpm/test-installed/setup" in scenario
+    assert "./.github/actions/provider/start" in scenario
+    assert "./.github/actions/agent/assert-availability" in scenario
+    assert "./.github/actions/agent/assert-operation-admission" in scenario
+    assert (
+        scenario.count("./.github/actions/provider/start")
+        == OPERATION_PROVIDER_COUNT
+    )
+    assert 'operation-drop-response-once: "true"' in scenario
+    assert (
+        "provider-identity: stateforge.test.operation_admission_primary"
+        in scenario
+    )
+    assert (
+        "provider-identity: stateforge.test.operation_admission_secondary"
+        in scenario
+    )
+    assert "secondary-provider-instance-id" in scenario
+    assert "provider-unit-name" in scenario
+    assert "Reject sensitive operation evidence" in scenario
+    assert "STATEFORGE_TEST_OPERATION_DROP_RESPONSE_ONCE" in provider_start
+    assert "OperationAdmissionService.StartOperation" in fixture
+    assert "response = await original(service, request, context)" in fixture
+    assert "grpc.StatusCode.UNAVAILABLE" in fixture
+    assert "operation-admission-response:dropped" in fixture
+    assert "operation-admission-response:returned" in fixture
+    assert "/usr/bin/python3" in assertion_action
+    assert "ProviderSessionManager" in assertion
+    assert "OperationAdmissionCoordinator" in assertion
+    assert "SqliteJournal" in assertion
+    assert "admit_operation" in assertion
+    assert "RESOLVED_EXISTING" in assertion
+    assert "asyncio.gather" in assertion
+    assert "multi_provider_isolation" in assertion
+    assert "drop-next-operation-response" in assertion
+    assert "resolve_operation" in assertion
+    assert "operation-admission-mode:resolve_only" in assertion
+    assert "Replacement generation redispatched prior work" in assertion
+    assert "secret_safe_evidence" in assertion
+    assert '"restart",' in assertion
+    assert "_restart_unit(_AGENT_UNIT)" in assertion
+    assert "Agent restart lost the unresolved admission record" in assertion
+    assert "request_identity_preserved" in assertion
+    assert 'version("stateforge-protocol")' in assertion
+    assert 'version("stateforge-provider")' in assertion
+    assert "operation-events.txt" in assertion_action
+    assert "target-sha256.txt" in assertion_action
+    assert "grpc.unary_unary_rpc_method_handler" not in assertion
 
 
 def test_installed_trigger_scenario_uses_public_api_and_journal() -> None:

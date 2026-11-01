@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
@@ -24,6 +26,14 @@ class ManifestCacheKey:
     sfp_version: SfpVersion
     schema_version: int
     revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestOperationDeclaration:
+    """Expose the manifest facts needed to preflight one operation."""
+
+    input_schema: Mapping[str, Any]
+    implements: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +73,34 @@ class ManifestDeclaration:
         if not isinstance(operations, dict):
             raise RuntimeError("Validated manifest cache entry is corrupt")
         return frozenset(operations)
+
+    @property
+    def operation_declarations(
+        self,
+    ) -> Mapping[str, ManifestOperationDeclaration]:
+        """Return immutable preflight declarations keyed by identifier."""
+        operations = self.as_dict().get("operations")
+        if not isinstance(operations, dict):
+            raise RuntimeError("Validated manifest cache entry is corrupt")
+        declarations: dict[str, ManifestOperationDeclaration] = {}
+        for identifier, declaration in operations.items():
+            if not isinstance(identifier, str) or not isinstance(
+                declaration, dict
+            ):
+                raise RuntimeError("Validated manifest cache entry is corrupt")
+            input_schema = declaration.get("inputSchema")
+            implements = declaration.get("implements")
+            if (
+                not isinstance(input_schema, dict)
+                or not isinstance(implements, list)
+                or any(not isinstance(item, str) for item in implements)
+            ):
+                raise RuntimeError("Validated manifest cache entry is corrupt")
+            declarations[identifier] = ManifestOperationDeclaration(
+                input_schema=MappingProxyType(input_schema),
+                implements=frozenset(implements),
+            )
+        return MappingProxyType(declarations)
 
     @property
     def trigger_schemas(self) -> dict[str, dict[str, Any]]:

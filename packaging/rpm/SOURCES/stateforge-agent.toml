@@ -19,10 +19,14 @@ health_interval_seconds = 15
 reconnect_initial_delay_seconds = 1
 reconnect_max_delay_seconds = 30
 trigger_max_in_flight_publications = 32
+operation_admission_timeout_seconds = 5
+operation_admission_attempts = 2
+operation_admission_retry_initial_delay_seconds = 1
 
 [journal]
 backend = "sqlite"
 maximum_pending_trigger_publications = 10000
+maximum_unresolved_operation_admissions = 10000
 
 [logging]
 level = "info"

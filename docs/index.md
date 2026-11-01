@@ -32,7 +32,10 @@ The current runtime can:
   operations without converting that evidence into authorization; and
 - consume manifest-declared Provider triggers, validate their payloads, and
   durably assume bounded local delivery responsibility before acknowledging
-  them.
+  them; and
+- admit manifest-declared operations only after current capability evidence,
+  persist their immutable identities before transport, and recover uncertain
+  responses without dispatching duplicate work.
 
 The runtime reports a Provider as connected only after both session setup and
 manifest validation succeed. Operational eligibility is stricter: the exact
@@ -51,3 +54,8 @@ Health reports `SERVING`. The Agent validates each event against the canonical
 P3 contract and accepted manifest schema, then commits its idempotency record
 before returning an acknowledgement. Accepted events remain pending in the
 Agent journal until the later SF-AOP forwarding boundary is implemented.
+
+Operation Admission is similarly fenced to the exact available session,
+manifest, declaration, and capability evidence. A lost response is retried
+with the same durable operation identity; the Provider resolves the existing
+record rather than running the operation twice.

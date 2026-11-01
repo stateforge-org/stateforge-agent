@@ -31,6 +31,27 @@ from stateforge_agent._sfp._services.capability_assessment import (
     SfpCapabilityAssessmentTransportError,
     SfpCapabilityAssessmentUnavailableError,
 )
+from stateforge_agent._sfp._services.operation_admission import (
+    OperationAdmissionDisposition,
+    OperationAdmissionRequest,
+    OperationAdmissionResult,
+    OperationRejection,
+    SfpOperationAdmissionDeadlineError,
+    SfpOperationAdmissionError,
+    SfpOperationAdmissionLimitError,
+    SfpOperationAdmissionProtocolError,
+    SfpOperationAdmissionRejectedError,
+    SfpOperationAdmissionRequestError,
+    SfpOperationAdmissionStaleError,
+    SfpOperationAdmissionTransportError,
+    SfpOperationAdmissionUnavailableError,
+)
+from stateforge_agent._sfp._services.operation_admission.coordinator import (
+    OperationAdmissionCapacityError,
+    OperationAdmissionConflictError,
+    OperationAdmissionPreconditionError,
+    OperationAdmissionUnresolvedError,
+)
 from stateforge_agent._sfp.version import SfpVersion
 
 __all__ = [
@@ -41,6 +62,14 @@ __all__ = [
     "CapabilityRequirement",
     "CapabilityRequirementState",
     "CapabilitySupportState",
+    "OperationAdmissionCapacityError",
+    "OperationAdmissionConflictError",
+    "OperationAdmissionDisposition",
+    "OperationAdmissionPreconditionError",
+    "OperationAdmissionRequest",
+    "OperationAdmissionResult",
+    "OperationAdmissionUnresolvedError",
+    "OperationRejection",
     "ProviderAvailabilityState",
     "ProviderAvailabilityStatus",
     "ProviderConnectionState",
@@ -59,5 +88,14 @@ __all__ = [
     "SfpConnectionError",
     "SfpIncompatibleError",
     "SfpManifestError",
+    "SfpOperationAdmissionDeadlineError",
+    "SfpOperationAdmissionError",
+    "SfpOperationAdmissionLimitError",
+    "SfpOperationAdmissionProtocolError",
+    "SfpOperationAdmissionRejectedError",
+    "SfpOperationAdmissionRequestError",
+    "SfpOperationAdmissionStaleError",
+    "SfpOperationAdmissionTransportError",
+    "SfpOperationAdmissionUnavailableError",
     "SfpVersion",
 ]

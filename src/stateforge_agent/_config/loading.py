@@ -40,6 +40,7 @@ ConfigPath: TypeAlias = tuple[str, ...]
 Provenance: TypeAlias = dict[ConfigPath, Path]
 
 _SUPPORTED_SCHEMA_VERSION = 1
+_MAX_OPERATION_ADMISSION_ATTEMPTS = 5
 _TOP_LEVEL_KEYS = {
     "schema_version",
     "control_plane",
@@ -335,18 +336,32 @@ def _validate_configuration(
             "reconnect_initial_delay_seconds",
             "reconnect_max_delay_seconds",
             "trigger_max_in_flight_publications",
+            "operation_admission_timeout_seconds",
+            "operation_admission_attempts",
+            "operation_admission_retry_initial_delay_seconds",
         },
         required={
             "health_interval_seconds",
             "reconnect_initial_delay_seconds",
             "reconnect_max_delay_seconds",
             "trigger_max_in_flight_publications",
+            "operation_admission_timeout_seconds",
+            "operation_admission_attempts",
+            "operation_admission_retry_initial_delay_seconds",
         },
     )
     validator.table(
         ("journal",),
-        allowed={"backend", "maximum_pending_trigger_publications"},
-        required={"backend", "maximum_pending_trigger_publications"},
+        allowed={
+            "backend",
+            "maximum_pending_trigger_publications",
+            "maximum_unresolved_operation_admissions",
+        },
+        required={
+            "backend",
+            "maximum_pending_trigger_publications",
+            "maximum_unresolved_operation_admissions",
+        },
     )
     validator.table(
         ("logging",),
@@ -386,6 +401,20 @@ def _validate_configuration(
     trigger_max_in_flight = validator.positive_integer(
         ("providers", "trigger_max_in_flight_publications")
     )
+    operation_admission_timeout = validator.positive_integer(
+        ("providers", "operation_admission_timeout_seconds")
+    )
+    operation_admission_attempts = validator.positive_integer(
+        ("providers", "operation_admission_attempts")
+    )
+    if operation_admission_attempts > _MAX_OPERATION_ADMISSION_ATTEMPTS:
+        validator.add_issue(
+            ("providers", "operation_admission_attempts"),
+            "must not exceed 5",
+        )
+    operation_admission_retry_initial_delay = validator.positive_integer(
+        ("providers", "operation_admission_retry_initial_delay_seconds")
+    )
     if (
         trigger_max_in_flight
         > trigger_publication_contract.MAX_IN_FLIGHT_PUBLICATIONS
@@ -414,6 +443,9 @@ def _validate_configuration(
     maximum_pending_trigger_publications = validator.positive_integer(
         ("journal", "maximum_pending_trigger_publications")
     )
+    maximum_unresolved_operation_admissions = validator.positive_integer(
+        ("journal", "maximum_unresolved_operation_admissions")
+    )
 
     log_level = validator.choice(
         ("logging", "level"),
@@ -438,11 +470,19 @@ def _validate_configuration(
             reconnect_initial_delay_seconds=reconnect_initial_delay,
             reconnect_max_delay_seconds=reconnect_max_delay,
             trigger_max_in_flight_publications=trigger_max_in_flight,
+            operation_admission_timeout_seconds=(operation_admission_timeout),
+            operation_admission_attempts=operation_admission_attempts,
+            operation_admission_retry_initial_delay_seconds=(
+                operation_admission_retry_initial_delay
+            ),
         ),
         journal=JournalConfiguration(
             backend=journal_backend,
             maximum_pending_trigger_publications=(
                 maximum_pending_trigger_publications
+            ),
+            maximum_unresolved_operation_admissions=(
+                maximum_unresolved_operation_admissions
             ),
         ),
         logging=LoggingConfiguration(

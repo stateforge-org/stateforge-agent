@@ -1,0 +1,99 @@
+name: Test installed Operation Admission
+description: Verify the RPM Agent against the real Provider Python runtime.
+
+inputs:
+  rpm-directory:
+    description: Directory containing the exact RPM artifact under test.
+    required: false
+    default: dist/rpm
+  evidence-directory:
+    description: Directory receiving this scenario's evidence.
+    required: false
+    default: dist/agent-system-test-evidence/operation-admission
+  fixture-directory:
+    description: Directory containing the exact Provider fixture bundle.
+    required: false
+    default: dist/provider-fixture
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare installed Agent
+      id: setup
+      uses: ./.github/actions/rpm/test-installed/setup
+      with:
+        rpm-directory: ${{ inputs.rpm-directory }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+        fixture-directory: ${{ inputs.fixture-directory }}
+
+    - name: Start primary operation-capable Provider
+      id: primary
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: provider-a
+        provider-identity: stateforge.test.operation_admission_primary
+
+    - name: Start secondary operation-capable Provider
+      id: secondary
+      uses: ./.github/actions/provider/start
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        fixture-path: ${{ steps.setup.outputs.fixture-path }}
+        wheel-directory: ${{ steps.setup.outputs.wheel-directory }}
+        provider-name: provider-b
+        provider-identity: stateforge.test.operation_admission_secondary
+        operation-drop-response-once: "true"
+
+    - name: Require primary Agent readiness
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.primary.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.primary.outputs.endpoint-generation }}
+        state: available
+        journal-cursor: ${{ steps.primary.outputs.agent-journal-cursor }}
+        evidence-directory: ${{ inputs.evidence-directory }}/primary-availability
+
+    - name: Require secondary Agent readiness
+      uses: ./.github/actions/agent/assert-availability
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.secondary.outputs.provider-instance-id }}
+        endpoint-generation: ${{ steps.secondary.outputs.endpoint-generation }}
+        state: available
+        journal-cursor: ${{ steps.secondary.outputs.agent-journal-cursor }}
+        evidence-directory: ${{ inputs.evidence-directory }}/secondary-availability
+
+    - name: Exercise Operation Admission through the installed Agent
+      uses: ./.github/actions/agent/assert-operation-admission
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        provider-instance-id: ${{ steps.primary.outputs.provider-instance-id }}
+        provider-unit-name: ${{ steps.primary.outputs.unit-name }}
+        secondary-provider-instance-id: ${{ steps.secondary.outputs.provider-instance-id }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Preserve evidence and clean up
+      if: ${{ always() }}
+      uses: ./.github/actions/rpm/test-installed/cleanup
+      with:
+        container-name: ${{ steps.setup.outputs.container-name }}
+        evidence-directory: ${{ inputs.evidence-directory }}
+
+    - name: Reject sensitive operation evidence
+      if: ${{ always() }}
+      shell: bash
+      env:
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+      run: |
+        set -euo pipefail
+        if grep --recursive --fixed-strings --line-number \
+          "stateforge-a5-secret-must-not-leak" \
+          "${EVIDENCE_DIRECTORY}"; then
+          printf 'Sensitive Operation Admission content reached evidence.\n' \
+            >&2
+          exit 1
+        fi

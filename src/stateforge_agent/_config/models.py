@@ -34,6 +34,9 @@ class ProviderConfiguration:
     reconnect_initial_delay_seconds: int
     reconnect_max_delay_seconds: int
     trigger_max_in_flight_publications: int
+    operation_admission_timeout_seconds: int
+    operation_admission_attempts: int
+    operation_admission_retry_initial_delay_seconds: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +45,7 @@ class JournalConfiguration:
 
     backend: JournalBackendName
     maximum_pending_trigger_publications: int
+    maximum_unresolved_operation_admissions: int
 
 
 @dataclass(frozen=True, slots=True)

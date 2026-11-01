@@ -26,10 +26,14 @@ health_interval_seconds = 15
 reconnect_initial_delay_seconds = 1
 reconnect_max_delay_seconds = 30
 trigger_max_in_flight_publications = 32
+operation_admission_timeout_seconds = 5
+operation_admission_attempts = 2
+operation_admission_retry_initial_delay_seconds = 1
 
 [journal]
 backend = "sqlite"
 maximum_pending_trigger_publications = 10000
+maximum_unresolved_operation_admissions = 10000
 
 [logging]
 level = "info"
@@ -43,6 +47,7 @@ _RUNTIME_FAILURE_EXIT_CODE = 1
 _INVALID_INPUT_EXIT_CODE = 2
 _TRIGGER_RECEIVE_WINDOW = 32
 _TRIGGER_PENDING_CAPACITY = 10_000
+_OPERATION_ADMISSION_ATTEMPTS = 2
 
 
 def test_process_exit_codes_are_stable() -> None:
@@ -73,6 +78,14 @@ def test_loads_complete_configuration(tmp_path: Path) -> None:
     )
     assert (
         loaded.config.journal.maximum_pending_trigger_publications
+        == _TRIGGER_PENDING_CAPACITY
+    )
+    assert (
+        loaded.config.providers.operation_admission_attempts
+        == _OPERATION_ADMISSION_ATTEMPTS
+    )
+    assert (
+        loaded.config.journal.maximum_unresolved_operation_admissions
         == _TRIGGER_PENDING_CAPACITY
     )
     assert loaded.sources == (config_path,)

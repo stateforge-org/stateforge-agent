@@ -32,6 +32,10 @@ inputs:
     description: Make the first real Capability Assessment RPC unavailable.
     required: false
     default: "false"
+  operation-drop-response-once:
+    description: Drop the first Operation Admission response after dispatch.
+    required: false
+    default: "false"
   drop-trigger-acks-until-restart:
     description: Discard trigger acknowledgements until the restart marker exists.
     required: false
@@ -71,6 +75,7 @@ runs:
         PROVIDER_IDENTITY: ${{ inputs.provider-identity }}
         PROVIDER_NAME: ${{ inputs.provider-name }}
         PROVIDER_STATE_NAME: ${{ inputs.provider-state-name }}
+        OPERATION_DROP_RESPONSE_ONCE: ${{ inputs.operation-drop-response-once }}
         TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
         WHEEL_DIRECTORY: ${{ inputs.wheel-directory }}
       run: |
@@ -163,6 +168,8 @@ runs:
             "STATEFORGE_TEST_TARGET_PATH=${target_path}" \
           --setenv \
             "STATEFORGE_TEST_CAPABILITY_UNAVAILABLE_ONCE=${CAPABILITY_UNAVAILABLE_ONCE}" \
+          --setenv \
+            "STATEFORGE_TEST_OPERATION_DROP_RESPONSE_ONCE=${OPERATION_DROP_RESPONSE_ONCE}" \
           --setenv \
             "STATEFORGE_TEST_DROP_TRIGGER_ACKS=${DROP_TRIGGER_ACKS}" \
           --setenv \
