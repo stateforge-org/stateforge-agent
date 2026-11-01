@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from stateforge_agent._journal import SqliteJournal, SqliteJournalError
-from stateforge_agent._journal import sqlite as sqlite_journal
+from stateforge_agent._journal.sqlite import journal as sqlite_journal
 
 _LARGE_PAYLOAD_BYTES = 1024 * 1024
 _SHORT_BUSY_TIMEOUT_MILLISECONDS = 1

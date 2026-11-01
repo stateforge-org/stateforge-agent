@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Self, TypeVar
 
 from stateforge_agent._journal.base import Journal, JournalError
-from stateforge_agent._journal.sqlite_operation_admissions import (
+from stateforge_agent._journal.sqlite.operation_admissions import (
     SqliteOperationAdmissionStore,
 )
-from stateforge_agent._journal.sqlite_trigger_publications import (
+from stateforge_agent._journal.sqlite.trigger_publications import (
     SqliteTriggerPublicationStore,
 )
 from stateforge_agent._sfp._services.operation_admission.store import (
