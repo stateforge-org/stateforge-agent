@@ -367,11 +367,12 @@ class OperationAdmissionCoordinator:
         )
         if not rejection.retryable or attempt_number + 1 >= self._attempts:
             raise error
-        await _retry_delay(
+        if not await _retry_delay(
             rejection,
             fallback=self._retry_initial_delay_seconds * (2**attempt_number),
             deadline=_deadline(attempt.invocation),
-        )
+        ):
+            raise error
 
     async def _retry_transport_error(
         self,
@@ -571,12 +572,14 @@ async def _retry_delay(
     *,
     fallback: float,
     deadline: datetime,
-) -> None:
+) -> bool:
+    """Wait for the prescribed delay when another timely attempt can fit."""
     delay = (
         rejection.retry_after.total_seconds()
         if rejection.retry_after is not None
         else fallback
     )
     if datetime.now(UTC).timestamp() + delay >= deadline.timestamp():
-        return
+        return False
     await asyncio.sleep(delay)
+    return True

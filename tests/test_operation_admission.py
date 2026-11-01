@@ -610,6 +610,39 @@ async def test_retryable_rejection_reuses_identity_then_succeeds(
 
 
 @pytest.mark.asyncio
+async def test_retry_after_beyond_execution_deadline_stops_retry(
+    tmp_path: Path,
+) -> None:
+    rejection = OperationRejection(
+        operation_id=None,
+        reason="ADMISSION_ERROR_REASON_PROVIDER_CAPACITY_EXHAUSTED",
+        retryable=True,
+        retry_after=timedelta(minutes=1),
+        explanation="Provider capacity is temporarily exhausted.",
+        grpc_status=grpc.StatusCode.RESOURCE_EXHAUSTED.name,
+    )
+    client = _ScriptedClient([SfpOperationAdmissionRejectedError(rejection)])
+    journal, coordinator, _ = await _coordinator(tmp_path / "agent.db", client)
+    lease = _lease()
+    request = replace(
+        _request(),
+        execution_deadline=datetime.now(UTC) + timedelta(seconds=1),
+    )
+    try:
+        with pytest.raises(SfpOperationAdmissionRejectedError):
+            await coordinator.admit(
+                lease,
+                request,
+                _assessment(lease),
+                assert_current=_current,
+            )
+    finally:
+        await journal.close()
+
+    assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_non_retryable_rejection_is_durable_and_not_retried(
     tmp_path: Path,
 ) -> None:
