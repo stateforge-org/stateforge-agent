@@ -935,6 +935,52 @@ async def test_wire_client_validates_structured_rejection() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("grpc_status", "retryable"),
+    [
+        (grpc.StatusCode.FAILED_PRECONDITION, True),
+        (grpc.StatusCode.UNAVAILABLE, False),
+    ],
+    ids=["status-does-not-match-reason", "retryable-does-not-match-reason"],
+)
+async def test_wire_client_rejects_inconsistent_rejection_semantics(
+    grpc_status: grpc.StatusCode,
+    retryable: bool,
+) -> None:
+    request = _wire_request()
+
+    async def handler(request_message, context):
+        detail = operation_admission_pb2.OperationAdmissionErrorDetail(
+            operation_id=request_message.invocation.operation_id,
+            reason=(
+                operation_admission_pb2.ADMISSION_ERROR_REASON_PROVIDER_UNAVAILABLE
+            ),
+            retryable=retryable,
+            explanation="Provider is temporarily unavailable.",
+        )
+        packed = any_pb2.Any()
+        packed.Pack(detail)
+        await context.abort_with_status(
+            rpc_status.to_status(
+                status_pb2.Status(
+                    code=grpc_status.value[0],
+                    message="Operation Admission rejected",
+                    details=[packed],
+                )
+            )
+        )
+        raise AssertionError("abort returned")
+
+    server, channel = await _start_admission_server(handler)
+    try:
+        with pytest.raises(SfpOperationAdmissionProtocolError):
+            await OperationAdmissionClient().start(channel, request)
+    finally:
+        await channel.close()
+        await server.stop(grace=None)
+
+
+@pytest.mark.asyncio
 async def test_wire_client_rejects_stale_or_malformed_provider_data() -> None:
     async def stale_handler(request, context):
         del request

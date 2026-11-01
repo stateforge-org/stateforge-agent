@@ -197,7 +197,10 @@ def _canonical_rejection(
     if not status.details[0].Unpack(detail):
         return None
     try:
-        validation.validate_admission_error_detail(detail)
+        validation.validate_admission_rejection(
+            detail,
+            grpc_status=error.code().name,
+        )
     except validation.OperationAdmissionValidationError as validation_error:
         raise SfpOperationAdmissionProtocolError(
             "Operation Admission rejection failed canonical validation"
