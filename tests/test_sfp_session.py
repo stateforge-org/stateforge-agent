@@ -963,7 +963,7 @@ async def test_replacement_fences_stale_health_updates(
         assert status.state is ProviderAvailabilityState.WATCHING
         assert status.endpoint_generation == _REPLACEMENT_ENDPOINT_GENERATION
 
-        applied = await manager._apply_health_status(
+        applied = await manager._availability.apply_health_status(
             first_session,
             health_pb2.HealthCheckResponse.SERVING,
         )
@@ -1425,8 +1425,8 @@ def test_reconnect_delay_is_positive_and_capped() -> None:
         reconnect_max_delay_seconds=maximum_ceiling,
     )
 
-    initial_delay = manager._retry_delay(0)
-    capped_delay = manager._retry_delay(100)
+    initial_delay = manager._connection_watcher._retry_delay(0)
+    capped_delay = manager._connection_watcher._retry_delay(100)
 
     assert initial_ceiling / 2 <= initial_delay <= initial_ceiling
     assert maximum_ceiling / 2 <= capped_delay <= maximum_ceiling

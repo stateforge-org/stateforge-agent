@@ -5,12 +5,14 @@ from stateforge_agent._sfp._runtime.errors import (
     SfpIncompatibleError,
     SfpManifestError,
 )
-from stateforge_agent._sfp._runtime.sessions import (
+from stateforge_agent._sfp._runtime.models import (
     ProviderAvailabilityState,
     ProviderAvailabilityStatus,
     ProviderConnectionState,
     ProviderConnectionStatus,
     ProviderSession,
+)
+from stateforge_agent._sfp._runtime.sessions import (
     ProviderSessionManager,
 )
 from stateforge_agent._sfp._services.capability_assessment import (
