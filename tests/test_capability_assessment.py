@@ -39,8 +39,8 @@ from stateforge_agent._sfp import (
     SfpCapabilityAssessmentUnavailableError,
     SfpVersion,
 )
-from stateforge_agent._sfp._runtime import sessions as sessions_module
 from stateforge_agent._sfp._runtime.channel import create_provider_channel
+from stateforge_agent._sfp._runtime.models import ProviderRuntimeState
 from stateforge_agent._sfp._services.capability_assessment.cache import (
     CapabilityAssessmentCache,
 )
@@ -589,7 +589,7 @@ def _manager_with_current_session(
     requester: _ScriptedRequester,
 ) -> tuple[
     ProviderSessionManager,
-    sessions_module._ProviderRuntimeState,
+    ProviderRuntimeState,
 ]:
     manager = ProviderSessionManager(
         agent_runtime_id=uuid4(),
@@ -608,7 +608,7 @@ def _manager_with_current_session(
         manifest_revision=session.manifest.key.revision,
         reason="test Provider is serving",
     )
-    state = sessions_module._ProviderRuntimeState(
+    state = ProviderRuntimeState(
         active_session=session,
         availability_status=status,
         availability_generation=1,
@@ -687,7 +687,7 @@ async def test_manager_requires_current_provider_availability() -> None:
 
 @pytest.mark.asyncio
 async def test_retry_stops_when_the_active_session_changes() -> None:
-    state_holder: list[sessions_module._ProviderRuntimeState] = []
+    state_holder: list[ProviderRuntimeState] = []
 
     def replace_session() -> None:
         state = state_holder[0]
@@ -744,7 +744,7 @@ async def test_cached_evidence_is_scoped_and_state_invalidated() -> None:
         )
 
         assert state.availability_status is not None
-        manager._record_availability(
+        manager._availability.record_availability(
             state,
             ProviderAvailabilityStatus(
                 provider_instance_id=_PROVIDER_ID,
@@ -755,7 +755,7 @@ async def test_cached_evidence_is_scoped_and_state_invalidated() -> None:
                 reason="readiness changed",
             ),
         )
-        manager._record_availability(
+        manager._availability.record_availability(
             state,
             ProviderAvailabilityStatus(
                 provider_instance_id=_PROVIDER_ID,

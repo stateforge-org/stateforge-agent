@@ -44,6 +44,7 @@ from stateforge_agent._sfp._services.operation_lifecycle.coordinator import (
 )
 
 _PROVIDER_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
+_SHORT_SOCKET_DIRECTORY = Path("/tmp")  # noqa: S108
 _OPERATION_IDENTIFIER = "stateforge.test/inspect@1"
 _MANIFEST_REVISION = "sha256:" + "a" * 64
 _RESULT_SCHEMA = {
@@ -52,6 +53,11 @@ _RESULT_SCHEMA = {
     "required": ["value"],
     "additionalProperties": False,
 }
+
+
+def _temporary_socket_path() -> Path:
+    """Use a short unique path that fits Unix socket address limits."""
+    return _SHORT_SOCKET_DIRECTORY / f"sf-{uuid4().hex}.sock"
 
 
 def _timestamp(value: datetime) -> timestamp_pb2.Timestamp:
@@ -644,7 +650,7 @@ async def test_real_grpc_client_validates_watch_and_cancel_correlation(
             ),
         )
     )
-    socket_path = Path("/private/tmp") / f"sf-{uuid4().hex[:12]}.sock"
+    socket_path = _temporary_socket_path()
     address = f"unix:{socket_path}"
     server.add_insecure_port(address)
     await server.start()
@@ -723,7 +729,7 @@ async def test_real_grpc_client_rejects_foreign_watch_response(
             ),
         )
     )
-    socket_path = Path("/private/tmp") / f"sf-{uuid4().hex[:12]}.sock"
+    socket_path = _temporary_socket_path()
     address = f"unix:{socket_path}"
     server.add_insecure_port(address)
     await server.start()
