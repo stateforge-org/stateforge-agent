@@ -32,7 +32,7 @@ from stateforge_agent._sfp._services.operation_admission.store import (
 )
 
 _SCHEMA_COMPONENT = "operation_admission"
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 1
 _TERMINAL_STATES = frozenset(
     {
         operation_lifecycle_pb2.OPERATION_STATE_SUCCEEDED,
@@ -78,7 +78,7 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
         invocation: operation_admission_pb2.OperationInvocation,
         request_fingerprint: str,
         *,
-        result_schema_json: bytes | None = None,
+        result_schema_json: bytes,
     ) -> OperationIntentResult:
         """Atomically insert or classify one immutable invocation."""
         serialized = invocation.SerializeToString(deterministic=True)
@@ -94,10 +94,7 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
                 decision = (
                     OperationIntentDecision.EXISTING
                     if existing.request_fingerprint == request_fingerprint
-                    and (
-                        result_schema_json is None
-                        or existing.result_schema_json == result_schema_json
-                    )
+                    and existing.result_schema_json == result_schema_json
                     else OperationIntentDecision.CONFLICT
                 )
                 return OperationIntentResult(decision, existing)
@@ -527,9 +524,7 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
             last_session_id=(_string(row[9]) if row[9] is not None else None),
             result=result,
             rejection=rejection,
-            result_schema_json=(
-                _bytes(row[22]) if row[22] is not None else None
-            ),
+            result_schema_json=_bytes(row[22]),
             lifecycle_snapshot=(
                 operation_lifecycle_pb2.OperationSnapshot.FromString(
                     _bytes(row[23])
@@ -569,7 +564,7 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
             "SELECT version FROM journal_schemas WHERE component = ?",
             (_SCHEMA_COMPONENT,),
         ).fetchone()
-        if row is not None and row[0] not in {1, _SCHEMA_VERSION}:
+        if row is not None and row[0] != _SCHEMA_VERSION:
             raise sqlite3.DatabaseError(
                 "Unsupported Operation Admission journal schema"
             )
@@ -600,7 +595,7 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
                 rejection_retry_after_seconds REAL,
                 rejection_explanation TEXT,
                 rejection_grpc_status TEXT,
-                result_schema_json BLOB,
+                result_schema_json BLOB NOT NULL,
                 lifecycle_snapshot BLOB,
                 lifecycle_terminal INTEGER NOT NULL DEFAULT 0,
                 cancellation_disposition INTEGER,
@@ -608,21 +603,6 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
             ) WITHOUT ROWID
             """
         )
-        if row is not None and row[0] == 1:
-            for column in (
-                "result_schema_json BLOB",
-                "lifecycle_snapshot BLOB",
-                "lifecycle_terminal INTEGER NOT NULL DEFAULT 0",
-                "cancellation_disposition INTEGER",
-            ):
-                connection.execute(
-                    "ALTER TABLE operation_admission_attempts "
-                    f"ADD COLUMN {column}"
-                )
-            connection.execute(
-                "UPDATE journal_schemas SET version = ? WHERE component = ?",
-                (_SCHEMA_VERSION, _SCHEMA_COMPONENT),
-            )
         connection.execute(
             """
             INSERT OR IGNORE INTO journal_schemas (component, version)

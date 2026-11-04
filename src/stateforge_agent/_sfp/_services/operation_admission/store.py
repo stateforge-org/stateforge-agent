@@ -55,9 +55,9 @@ class OperationAttempt:
     attempt_count: int
     last_endpoint_generation: int | None
     last_session_id: str | None
+    result_schema_json: bytes = field(repr=False)
     result: OperationAdmissionResult | None = None
     rejection: OperationRejection | None = None
-    result_schema_json: bytes | None = field(default=None, repr=False)
     lifecycle_snapshot: operation_lifecycle_pb2.OperationSnapshot | None = (
         field(default=None, repr=False, compare=False)
     )
@@ -86,7 +86,7 @@ class OperationAdmissionStore(ABC):
         invocation: operation_admission_pb2.OperationInvocation,
         request_fingerprint: str,
         *,
-        result_schema_json: bytes | None = None,
+        result_schema_json: bytes,
     ) -> OperationIntentResult:
         """Atomically create or classify one immutable operation identity."""
 

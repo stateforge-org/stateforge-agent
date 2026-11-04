@@ -232,7 +232,6 @@ class OperationLifecycleCoordinator:
                 provider = self._providers.get(attempt.provider_instance_id)
                 if (
                     provider is None
-                    or attempt.result_schema_json is None
                     or attempt.operation_id in provider.tasks
                     or attempt.operation_id in provider.blocked
                 ):
@@ -338,7 +337,6 @@ class OperationLifecycleCoordinator:
             attempt is None
             or attempt.state is not OperationAttemptState.ACCEPTED
             or attempt.result is None
-            or attempt.result_schema_json is None
         ):
             raise OperationLifecyclePreconditionError(
                 "Operation Lifecycle requires a pinned admitted identity"
@@ -353,10 +351,6 @@ class OperationLifecycleCoordinator:
         cancellation_disposition: int | None = None,
     ) -> OperationStatus:
         if snapshot.state == operation_lifecycle_pb2.OPERATION_STATE_SUCCEEDED:
-            if attempt.result_schema_json is None:
-                raise OperationLifecyclePreconditionError(
-                    "Operation result contract was not pinned"
-                )
             schema = json.loads(attempt.result_schema_json)
             result = MessageToDict(snapshot.success.result)
             if not Draft202012Validator(schema).is_valid(result):
