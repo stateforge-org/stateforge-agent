@@ -10,7 +10,7 @@ SHA_LENGTH = 40
 DEPENDENCY_COUNT = 2
 HEALTH_SCENARIO_PROVIDER_COUNT = 3
 MANIFEST_ASSERTION_COUNT = 6
-AVAILABILITY_ASSERTION_COUNT = 12
+AVAILABILITY_ASSERTION_COUNT = 13
 OPERATION_PROVIDER_COUNT = 2
 
 
@@ -437,6 +437,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "agent/assert-capability-boundary",
         "agent/assert-capability-assessment",
         "agent/assert-operation-admission",
+        "agent/assert-operation-lifecycle",
         "agent/assert-trigger-publication",
         "agent/collect-evidence",
         "agent/install",
@@ -456,6 +457,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "rpm/test-installed/health/provider-availability",
         "rpm/test-installed/lifecycle/multiple-providers",
         "rpm/test-installed/operations/admission",
+        "rpm/test-installed/operations/lifecycle",
         "rpm/test-installed/setup",
         "rpm/test-installed/smoke/manifest-exchange",
         "rpm/test-installed/triggers/publication",

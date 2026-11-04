@@ -11,6 +11,9 @@ from uuid import UUID
 from stateforge_protocol.sfp.operation_admission.v1 import (
     operation_admission_pb2,
 )
+from stateforge_protocol.sfp.operation_lifecycle.v1 import (
+    operation_lifecycle_pb2,
+)
 
 from stateforge_agent._sfp._services.operation_admission.models import (
     OperationAdmissionResult,
@@ -54,6 +57,11 @@ class OperationAttempt:
     last_session_id: str | None
     result: OperationAdmissionResult | None = None
     rejection: OperationRejection | None = None
+    result_schema_json: bytes | None = field(default=None, repr=False)
+    lifecycle_snapshot: operation_lifecycle_pb2.OperationSnapshot | None = (
+        field(default=None, repr=False, compare=False)
+    )
+    cancellation_disposition: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +85,8 @@ class OperationAdmissionStore(ABC):
         provider_instance_id: UUID,
         invocation: operation_admission_pb2.OperationInvocation,
         request_fingerprint: str,
+        *,
+        result_schema_json: bytes | None = None,
     ) -> OperationIntentResult:
         """Atomically create or classify one immutable operation identity."""
 
@@ -118,3 +128,18 @@ class OperationAdmissionStore(ABC):
     @abstractmethod
     async def unresolved(self) -> tuple[OperationAttempt, ...]:
         """Return unresolved attempts available for restart recovery."""
+
+    @abstractmethod
+    async def accepted_nonterminal(self) -> tuple[OperationAttempt, ...]:
+        """Return admitted work whose terminal state is not yet retained."""
+
+    @abstractmethod
+    async def record_lifecycle_snapshot(
+        self,
+        provider_instance_id: UUID,
+        operation_id: UUID,
+        snapshot: operation_lifecycle_pb2.OperationSnapshot,
+        *,
+        cancellation_disposition: int | None = None,
+    ) -> OperationAttempt:
+        """Atomically retain a validated snapshot and cancellation decision."""

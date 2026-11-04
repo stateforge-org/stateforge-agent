@@ -63,6 +63,14 @@ from stateforge_agent._sfp._services.operation_admission.models import (
     OperationAdmissionRequest,
     OperationAdmissionResult,
 )
+from stateforge_agent._sfp._services.operation_lifecycle.coordinator import (
+    OperationLifecycleCoordinator,
+    OperationLifecycleLease,
+    OperationLifecyclePreconditionError,
+)
+from stateforge_agent._sfp._services.operation_lifecycle.models import (
+    OperationStatus,
+)
 from stateforge_agent._sfp._services.trigger_publication.client import (
     SfpTriggerPublicationError,
     SfpTriggerPublicationStaleError,
@@ -195,6 +203,7 @@ class ProviderSessionManager:
         ) = None,
         trigger_publication: TriggerPublicationCoordinator | None = None,
         operation_admission: OperationAdmissionCoordinator | None = None,
+        operation_lifecycle: OperationLifecycleCoordinator | None = None,
     ) -> None:
         """Create an empty Provider session registry."""
         if not isinstance(agent_runtime_id, UUID):
@@ -261,6 +270,7 @@ class ProviderSessionManager:
         )
         self._trigger_publication = trigger_publication
         self._operation_admission = operation_admission
+        self._operation_lifecycle = operation_lifecycle
         self._providers: dict[UUID, _ProviderRuntimeState] = {}
         self._closed = False
         self._lock = asyncio.Lock()
@@ -341,12 +351,14 @@ class ProviderSessionManager:
         lease = await self._operation_admission_lease(
             request.provider_instance_id
         )
-        return await coordinator.admit(
+        result = await coordinator.admit(
             lease,
             request,
             assessment,
             assert_current=self._assert_operation_admission_is_current,
         )
+        await self._resume_operation_observation(request.provider_instance_id)
+        return result
 
     async def resolve_operation(
         self,
@@ -371,12 +383,93 @@ class ProviderSessionManager:
             execution_context=execution_context,
         )
         lease = await self._operation_admission_lease(provider_instance_id)
-        return await coordinator.submit(
+        result = await coordinator.submit(
             lease,
             operation_id,
             assessment,
             assert_current=self._assert_operation_admission_is_current,
         )
+        await self._resume_operation_observation(provider_instance_id)
+        return result
+
+    async def operation_status(
+        self,
+        provider_instance_id: UUID,
+        operation_id: UUID,
+    ) -> OperationStatus | None:
+        """Return durable local knowledge of one operation."""
+        coordinator = self._operation_lifecycle
+        if coordinator is None:
+            raise OperationLifecyclePreconditionError(
+                "Operation Lifecycle is not configured"
+            )
+        return await coordinator.status(provider_instance_id, operation_id)
+
+    async def cancel_operation(
+        self,
+        provider_instance_id: UUID,
+        operation_id: UUID,
+    ) -> OperationStatus:
+        """Request cancellation for one admitted operation only."""
+        coordinator = self._operation_lifecycle
+        if coordinator is None:
+            raise OperationLifecyclePreconditionError(
+                "Operation Lifecycle is not configured"
+            )
+        lease = await self._operation_lifecycle_lease(provider_instance_id)
+        return await coordinator.cancel(
+            lease,
+            operation_id,
+            assert_current=self._assert_operation_lifecycle_is_current,
+        )
+
+    async def _resume_operation_observation(
+        self, provider_instance_id: UUID
+    ) -> None:
+        coordinator = self._operation_lifecycle
+        if coordinator is None:
+            return
+        try:
+            lease = await self._operation_lifecycle_lease(provider_instance_id)
+        except OperationLifecyclePreconditionError:
+            return
+        await coordinator.resume(
+            lease,
+            assert_current=self._assert_operation_lifecycle_is_current,
+        )
+
+    async def _operation_lifecycle_lease(
+        self, provider_instance_id: UUID
+    ) -> OperationLifecycleLease:
+        """Use the current channel even when Health blocks new admission."""
+        async with self._lock:
+            provider = self._providers.get(provider_instance_id)
+            if provider is None or provider.active_session is None:
+                raise OperationLifecyclePreconditionError(
+                    "Provider has no active session for Operation Lifecycle"
+                )
+            session = provider.active_session
+            return OperationLifecycleLease(
+                provider_instance_id=session.provider_instance_id,
+                endpoint_generation=session.endpoint_generation,
+                session_id=session.session_id,
+                channel=session._channel,
+                session_token=session,
+            )
+
+    async def _assert_operation_lifecycle_is_current(
+        self, lease: OperationLifecycleLease
+    ) -> None:
+        async with self._lock:
+            provider = self._providers.get(lease.provider_instance_id)
+            if (
+                self._closed
+                or provider is None
+                or provider.active_session is not lease.session_token
+            ):
+                raise OperationLifecyclePreconditionError(
+                    "Operation Lifecycle session is no longer current"
+                )
 
     async def _operation_admission_lease(
         self,
@@ -623,6 +716,7 @@ class ProviderSessionManager:
         await _cancel_task(replaced_health_watcher)
         if replaced_session is not None:
             await replaced_session._channel.close()
+        await self._resume_operation_observation(result.provider_instance_id)
         return result
 
     async def _connect_candidate(
@@ -770,6 +864,10 @@ class ProviderSessionManager:
         await _cancel_task(watcher)
         await _cancel_task(health_watcher)
         await _cancel_task(trigger_watcher)
+        if session is not None and self._operation_lifecycle is not None:
+            await self._operation_lifecycle.suspend(
+                provider_instance_id, session
+            )
         if session is not None:
             await session._channel.close()
 
@@ -851,6 +949,8 @@ class ProviderSessionManager:
             await asyncio.gather(*health_watchers, return_exceptions=True)
         if trigger_watchers:
             await asyncio.gather(*trigger_watchers, return_exceptions=True)
+        if self._operation_lifecycle is not None:
+            await self._operation_lifecycle.close()
         for session in sessions:
             await session._channel.close()
         self._capability_assessment.clear()
@@ -1427,6 +1527,10 @@ class ProviderSessionManager:
             )
         await _cancel_task(health_watcher)
         await _cancel_task(trigger_watcher)
+        if self._operation_lifecycle is not None:
+            await self._operation_lifecycle.suspend(
+                session.provider_instance_id, session
+            )
         await session._channel.close()
         await self._schedule_retry(session.provider_instance_id)
 

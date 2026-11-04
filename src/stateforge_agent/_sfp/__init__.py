@@ -52,6 +52,9 @@ from stateforge_agent._sfp._services.operation_admission.coordinator import (
     OperationAdmissionPreconditionError,
     OperationAdmissionUnresolvedError,
 )
+from stateforge_agent._sfp._services.operation_lifecycle.models import (
+    OperationStatus,
+)
 from stateforge_agent._sfp.version import SfpVersion
 
 __all__ = [
@@ -70,6 +73,7 @@ __all__ = [
     "OperationAdmissionResult",
     "OperationAdmissionUnresolvedError",
     "OperationRejection",
+    "OperationStatus",
     "ProviderAvailabilityState",
     "ProviderAvailabilityStatus",
     "ProviderConnectionState",

@@ -35,7 +35,9 @@ The current runtime can:
   them; and
 - admit manifest-declared operations only after current capability evidence,
   persist their immutable identities before transport, and recover uncertain
-  responses without dispatching duplicate work.
+  responses without dispatching duplicate work; and
+- watch admitted operations, retain their latest progress and terminal
+  outcomes, and request cooperative operation-scoped cancellation.
 
 The runtime reports a Provider as connected only after both session setup and
 manifest validation succeed. Operational eligibility is stricter: the exact
@@ -59,3 +61,7 @@ Operation Admission is similarly fenced to the exact available session,
 manifest, declaration, and capability evidence. A lost response is retried
 with the same durable operation identity; the Provider resolves the existing
 record rather than running the operation twice.
+
+Operation Lifecycle resumes Watch from the last durable sequence after an
+interruption. A cancellation request is recorded separately from the final
+outcome; only a terminal Provider snapshot confirms that execution stopped.

@@ -11,6 +11,12 @@ from uuid import UUID
 from stateforge_protocol.sfp.operation_admission.v1 import (
     operation_admission_pb2,
 )
+from stateforge_protocol.sfp.operation_lifecycle.v1 import (
+    operation_lifecycle_pb2,
+)
+from stateforge_protocol.sfp.operation_lifecycle.v1 import (
+    validation as lifecycle_validation,
+)
 
 from stateforge_agent._sfp._services.operation_admission.models import (
     OperationAdmissionDisposition,
@@ -26,7 +32,14 @@ from stateforge_agent._sfp._services.operation_admission.store import (
 )
 
 _SCHEMA_COMPONENT = "operation_admission"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+_TERMINAL_STATES = frozenset(
+    {
+        operation_lifecycle_pb2.OPERATION_STATE_SUCCEEDED,
+        operation_lifecycle_pb2.OPERATION_STATE_FAILED,
+        operation_lifecycle_pb2.OPERATION_STATE_CANCELLED,
+    }
+)
 _Result = TypeVar("_Result")
 
 
@@ -64,6 +77,8 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
         provider_instance_id: UUID,
         invocation: operation_admission_pb2.OperationInvocation,
         request_fingerprint: str,
+        *,
+        result_schema_json: bytes | None = None,
     ) -> OperationIntentResult:
         """Atomically insert or classify one immutable invocation."""
         serialized = invocation.SerializeToString(deterministic=True)
@@ -79,6 +94,10 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
                 decision = (
                     OperationIntentDecision.EXISTING
                     if existing.request_fingerprint == request_fingerprint
+                    and (
+                        result_schema_json is None
+                        or existing.result_schema_json == result_schema_json
+                    )
                     else OperationIntentDecision.CONFLICT
                 )
                 return OperationIntentResult(decision, existing)
@@ -96,17 +115,19 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
                     operation_id,
                     invocation,
                     request_fingerprint,
+                    result_schema_json,
                     state,
                     created_at,
                     updated_at,
                     attempt_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
                 """,
                 (
                     str(provider_instance_id),
                     invocation.operation_id,
                     serialized,
                     request_fingerprint,
+                    result_schema_json,
                     OperationAttemptState.UNRESOLVED.value,
                     now,
                     now,
@@ -298,6 +319,135 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
 
         return await self._journal.transaction(read)
 
+    async def accepted_nonterminal(self) -> tuple[OperationAttempt, ...]:
+        """Return accepted records that still need observation."""
+
+        def read(
+            connection: sqlite3.Connection,
+        ) -> tuple[OperationAttempt, ...]:
+            rows = connection.execute(
+                f"{self._SELECT} WHERE state = ? AND lifecycle_terminal = 0 "
+                "ORDER BY created_at",
+                (OperationAttemptState.ACCEPTED.value,),
+            ).fetchall()
+            return tuple(self._attempt_from_row(row) for row in rows)
+
+        return await self._journal.transaction(read)
+
+    async def record_lifecycle_snapshot(
+        self,
+        provider_instance_id: UUID,
+        operation_id: UUID,
+        snapshot: operation_lifecycle_pb2.OperationSnapshot,
+        *,
+        cancellation_disposition: int | None = None,
+    ) -> OperationAttempt:
+        """Commit newer evidence without replacing a terminal outcome."""
+        lifecycle_validation.validate_operation_snapshot(snapshot)
+        serialized = snapshot.SerializeToString(deterministic=True)
+        now = datetime.now(UTC).isoformat()
+
+        def record(  # noqa: PLR0912 - atomic replay and terminal decisions
+            connection: sqlite3.Connection,
+        ) -> OperationAttempt:
+            current = self._select(
+                connection, provider_instance_id, operation_id
+            )
+            if (
+                current is None
+                or current.state is not OperationAttemptState.ACCEPTED
+                or current.result is None
+            ):
+                raise ValueError(
+                    "Lifecycle evidence has no accepted Agent intent"
+                )
+            admission = snapshot.admission_record
+            if (
+                admission.operation_id != str(operation_id)
+                or admission.request_fingerprint != current.request_fingerprint
+                or snapshot.operation_identifier
+                != current.invocation.operation_identifier
+                or snapshot.manifest_revision
+                != current.invocation.contract.manifest_revision
+                or admission.admitted_endpoint_generation
+                != current.result.admitted_endpoint_generation
+                or admission.admitted_at.ToDatetime(tzinfo=UTC)
+                != current.result.admitted_at
+                or admission.record_expires_at.ToDatetime(tzinfo=UTC)
+                != current.result.record_expires_at
+            ):
+                raise ValueError(
+                    "Lifecycle evidence does not match durable admission"
+                )
+            previous = current.lifecycle_snapshot
+            retained_bytes = serialized
+            terminal = int(snapshot.state in _TERMINAL_STATES)
+            if previous is not None:
+                if previous.state in _TERMINAL_STATES:
+                    if snapshot.sequence < previous.sequence:
+                        retained_bytes = previous.SerializeToString(
+                            deterministic=True
+                        )
+                        terminal = 1
+                    else:
+                        lifecycle_validation.validate_terminal_replay(
+                            previous, snapshot
+                        )
+                elif snapshot.sequence == previous.sequence:
+                    if snapshot != previous:
+                        raise ValueError(
+                            "Lifecycle sequence changed without advancing"
+                        )
+                elif snapshot.sequence > previous.sequence:
+                    if snapshot.sequence == previous.sequence + 1:
+                        lifecycle_validation.validate_snapshot_transition(
+                            previous, snapshot
+                        )
+                    elif (
+                        snapshot.admission_record != previous.admission_record
+                        or snapshot.operation_identifier
+                        != previous.operation_identifier
+                        or snapshot.manifest_revision
+                        != previous.manifest_revision
+                    ):
+                        raise ValueError(
+                            "Coalesced lifecycle evidence changed identity"
+                        )
+                else:
+                    retained_bytes = previous.SerializeToString(
+                        deterministic=True
+                    )
+                    terminal = 0
+            connection.execute(
+                """
+                UPDATE operation_admission_attempts
+                SET lifecycle_snapshot = ?, lifecycle_terminal = ?,
+                    cancellation_disposition = COALESCE(
+                        ?, cancellation_disposition
+                    ),
+                    updated_at = ?
+                WHERE provider_instance_id = ? AND operation_id = ?
+                """,
+                (
+                    retained_bytes,
+                    terminal,
+                    cancellation_disposition,
+                    now,
+                    str(provider_instance_id),
+                    str(operation_id),
+                ),
+            )
+            updated = self._select(
+                connection, provider_instance_id, operation_id
+            )
+            if updated is None:
+                raise sqlite3.DatabaseError(
+                    "Lifecycle evidence disappeared during commit"
+                )
+            return updated
+
+        return await self._journal.transaction(record)
+
     _SELECT = """
         SELECT provider_instance_id, operation_id, invocation,
             request_fingerprint, state, created_at, updated_at,
@@ -307,7 +457,8 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
             record_expires_at, admitted_endpoint_generation,
             rejection_reason, rejection_retryable,
             rejection_retry_after_seconds, rejection_explanation,
-            rejection_grpc_status
+            rejection_grpc_status, result_schema_json,
+            lifecycle_snapshot, cancellation_disposition
         FROM operation_admission_attempts
     """
 
@@ -376,6 +527,19 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
             last_session_id=(_string(row[9]) if row[9] is not None else None),
             result=result,
             rejection=rejection,
+            result_schema_json=(
+                _bytes(row[22]) if row[22] is not None else None
+            ),
+            lifecycle_snapshot=(
+                operation_lifecycle_pb2.OperationSnapshot.FromString(
+                    _bytes(row[23])
+                )
+                if row[23] is not None
+                else None
+            ),
+            cancellation_disposition=(
+                _integer(row[24]) if row[24] is not None else None
+            ),
         )
 
     @staticmethod
@@ -405,7 +569,7 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
             "SELECT version FROM journal_schemas WHERE component = ?",
             (_SCHEMA_COMPONENT,),
         ).fetchone()
-        if row is not None and row[0] != _SCHEMA_VERSION:
+        if row is not None and row[0] not in {1, _SCHEMA_VERSION}:
             raise sqlite3.DatabaseError(
                 "Unsupported Operation Admission journal schema"
             )
@@ -436,10 +600,29 @@ class SqliteOperationAdmissionStore(OperationAdmissionStore):
                 rejection_retry_after_seconds REAL,
                 rejection_explanation TEXT,
                 rejection_grpc_status TEXT,
+                result_schema_json BLOB,
+                lifecycle_snapshot BLOB,
+                lifecycle_terminal INTEGER NOT NULL DEFAULT 0,
+                cancellation_disposition INTEGER,
                 PRIMARY KEY (provider_instance_id, operation_id)
             ) WITHOUT ROWID
             """
         )
+        if row is not None and row[0] == 1:
+            for column in (
+                "result_schema_json BLOB",
+                "lifecycle_snapshot BLOB",
+                "lifecycle_terminal INTEGER NOT NULL DEFAULT 0",
+                "cancellation_disposition INTEGER",
+            ):
+                connection.execute(
+                    "ALTER TABLE operation_admission_attempts "
+                    f"ADD COLUMN {column}"
+                )
+            connection.execute(
+                "UPDATE journal_schemas SET version = ? WHERE component = ?",
+                (_SCHEMA_VERSION, _SCHEMA_COMPONENT),
+            )
         connection.execute(
             """
             INSERT OR IGNORE INTO journal_schemas (component, version)
