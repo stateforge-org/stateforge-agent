@@ -79,6 +79,7 @@ _INPUT_SCHEMA = {
     "required": ["unit"],
     "additionalProperties": False,
 }
+_RESULT_SCHEMA = {"type": "object"}
 
 
 class _ScriptedClient(OperationAdmissionRequester):
@@ -136,6 +137,7 @@ def _lease(*, generation: int = 1) -> OperationAdmissionLease:
         operation_declarations={
             _OPERATION: ManifestOperationDeclaration(
                 input_schema=_INPUT_SCHEMA,
+                result_schema=_RESULT_SCHEMA,
                 implements=frozenset({_PROFILE}),
             )
         },
@@ -478,6 +480,7 @@ async def test_preflight_rejects_invalid_payload_or_profile(
                             "unit": {"type": "string", "minLength": 1}
                         },
                     },
+                    result_schema=_RESULT_SCHEMA,
                     implements=frozenset({_PROFILE}),
                 )
             },

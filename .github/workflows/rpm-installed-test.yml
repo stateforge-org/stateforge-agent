@@ -108,6 +108,7 @@ jobs:
           - capability-mismatch
           - capability-limits
           - operation-admission
+          - operation-lifecycle
           - provider-availability
           - trigger-publication
           - trigger-storage-failure
@@ -157,6 +158,13 @@ jobs:
       - name: Run Operation Admission scenario
         if: ${{ matrix.scenario == 'operation-admission' }}
         uses: ./.github/actions/rpm/test-installed/operations/admission
+        with:
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          fixture-directory: dist/provider-fixture
+
+      - name: Run Operation Lifecycle scenario
+        if: ${{ matrix.scenario == 'operation-lifecycle' }}
+        uses: ./.github/actions/rpm/test-installed/operations/lifecycle
         with:
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
           fixture-directory: dist/provider-fixture

@@ -1,0 +1,48 @@
+name: Assert Agent Operation Lifecycle
+description: Exercise RPM-installed Agent lifecycle observation against a real Provider.
+
+inputs:
+  container-name:
+    description: Fedora container running the installed Agent and Provider.
+    required: true
+  provider-instance-id:
+    description: Provider installation identity published by the fixture.
+    required: true
+  provider-state-name:
+    description: Fixture state directory containing operation evidence.
+    required: false
+    default: provider-a
+  evidence-directory:
+    description: Host directory receiving sanitized lifecycle evidence.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Exercise installed Agent Operation Lifecycle
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        EVIDENCE_DIRECTORY: ${{ inputs.evidence-directory }}
+        PROVIDER_INSTANCE_ID: ${{ inputs.provider-instance-id }}
+        PROVIDER_STATE_NAME: ${{ inputs.provider-state-name }}
+      run: |
+        set -euo pipefail
+        mkdir -p "${EVIDENCE_DIRECTORY}"
+        verifier_directory="/opt/stateforge-agent-tests/operation-lifecycle"
+        verifier="${verifier_directory}/assert.py"
+        state_directory="/var/lib/stateforge-provider-fixtures/${PROVIDER_STATE_NAME}"
+        docker exec "${CONTAINER_NAME}" mkdir -p "${verifier_directory}"
+        docker cp "${ACTION_PATH}/assert.py" \
+          "${CONTAINER_NAME}:${verifier}"
+        set +e
+        docker exec "${CONTAINER_NAME}" /usr/bin/python3 "${verifier}" \
+          --provider-instance-id "${PROVIDER_INSTANCE_ID}" \
+          --provider-state-name "${PROVIDER_STATE_NAME}" \
+          > "${EVIDENCE_DIRECTORY}/operation-lifecycle.json"
+        status=$?
+        set -e
+        docker exec "${CONTAINER_NAME}" cat "${state_directory}/events.log" \
+          > "${EVIDENCE_DIRECTORY}/operation-events.txt" 2>&1 || true
+        exit "${status}"

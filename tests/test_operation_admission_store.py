@@ -31,6 +31,7 @@ _PROVIDER_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _OTHER_PROVIDER_ID = UUID("1d40d0d5-ff2a-4780-bc3d-c4a7c55fc3a2")
 _MANIFEST_REVISION = "sha256:" + ("a" * 64)
 _ATTEMPTED_ENDPOINT_GENERATION = 4
+_RESULT_SCHEMA_JSON = b'{"type":"object"}'
 
 
 def _invocation(
@@ -81,17 +82,26 @@ async def test_intent_is_immutable_and_survives_journal_restart(
         _PROVIDER_ID,
         invocation,
         fingerprint,
+        result_schema_json=_RESULT_SCHEMA_JSON,
     )
     duplicate = await store.create_intent(
         _PROVIDER_ID,
         invocation,
         fingerprint,
+        result_schema_json=_RESULT_SCHEMA_JSON,
     )
     conflicting = _invocation(operation_id, unit="sshd.service")
     conflict = await store.create_intent(
         _PROVIDER_ID,
         conflicting,
         validation.compute_request_fingerprint(conflicting),
+        result_schema_json=_RESULT_SCHEMA_JSON,
+    )
+    schema_conflict = await store.create_intent(
+        _PROVIDER_ID,
+        invocation,
+        fingerprint,
+        result_schema_json=b'{"type":"string"}',
     )
     await journal.close()
 
@@ -104,6 +114,7 @@ async def test_intent_is_immutable_and_survives_journal_restart(
     assert created.decision is OperationIntentDecision.CREATED
     assert duplicate.decision is OperationIntentDecision.EXISTING
     assert conflict.decision is OperationIntentDecision.CONFLICT
+    assert schema_conflict.decision is OperationIntentDecision.CONFLICT
     assert persisted is not None
     assert persisted.request_fingerprint == fingerprint
     assert persisted.invocation == invocation
@@ -121,16 +132,19 @@ async def test_unresolved_capacity_and_provider_identity_are_isolated(
             _PROVIDER_ID,
             first,
             validation.compute_request_fingerprint(first),
+            result_schema_json=_RESULT_SCHEMA_JSON,
         )
         same_identity_other_provider = await store.create_intent(
             _OTHER_PROVIDER_ID,
             first,
             validation.compute_request_fingerprint(first),
+            result_schema_json=_RESULT_SCHEMA_JSON,
         )
         exhausted = await store.create_intent(
             _PROVIDER_ID,
             second,
             validation.compute_request_fingerprint(second),
+            result_schema_json=_RESULT_SCHEMA_JSON,
         )
     finally:
         await journal.close()
@@ -156,11 +170,13 @@ async def test_concurrent_intent_creation_cannot_exceed_capacity(
                 _PROVIDER_ID,
                 first,
                 validation.compute_request_fingerprint(first),
+                result_schema_json=_RESULT_SCHEMA_JSON,
             ),
             store.create_intent(
                 _PROVIDER_ID,
                 second,
                 validation.compute_request_fingerprint(second),
+                result_schema_json=_RESULT_SCHEMA_JSON,
             ),
         )
         unresolved = await store.unresolved()
@@ -192,11 +208,13 @@ async def test_transport_success_and_rejection_are_durable(
             _PROVIDER_ID,
             accepted_invocation,
             accepted_fingerprint,
+            result_schema_json=_RESULT_SCHEMA_JSON,
         )
         await store.create_intent(
             _PROVIDER_ID,
             rejected_invocation,
             rejected_fingerprint,
+            result_schema_json=_RESULT_SCHEMA_JSON,
         )
         attempted = await store.record_transport_attempt(
             _PROVIDER_ID,

@@ -23,6 +23,12 @@ from stateforge_protocol.sfp.trigger_publication.v1 import (
 )
 from stateforge_provider import (
     HealthStatus,
+    OperationCancelledError,
+    OperationCleanup,
+    OperationContext,
+    OperationEffects,
+    OperationFailedError,
+    OperationSideEffects,
     Platform,
     Provider,
     ProviderModel,
@@ -113,6 +119,7 @@ class ManifestFixtureProvider(Provider):
         )
         self._event_log = Path(os.environ["STATEFORGE_TEST_EVENT_LOG"])
         self._target_path = Path(os.environ["STATEFORGE_TEST_TARGET_PATH"])
+        self._state_directory = state_directory
 
     async def on_startup(self) -> None:
         """Install deterministic health transitions for system tests."""
@@ -227,6 +234,55 @@ class ManifestFixtureProvider(Provider):
         """Declare one operation whose current support is unresolved."""
         self._record("operation:indeterminate")
         return FixtureResult(value=request.value)
+
+    @operation("stateforge.test/lifecycle@1", cancellable=True)
+    async def lifecycle(
+        self, request: FixtureInput, context: OperationContext
+    ) -> FixtureResult:
+        """Expose deterministic real execution for Agent lifecycle tests."""
+        self._record(f"operation:lifecycle:{context.operation_id}")
+        await context.report_progress("Started", percentage=0)
+        if request.value == "held":
+            await self._wait_for_marker("lifecycle-release")
+        elif request.value in {"cancel", "cancel-success"}:
+            await context.wait_for_cancellation()
+            await context.report_progress("Stopping", percentage=50)
+            await self._wait_for_marker("cancellation-release")
+            if request.value == "cancel":
+                raise OperationCancelledError(
+                    OperationEffects(
+                        side_effects=OperationSideEffects.PRESENT,
+                        cleanup=OperationCleanup.COMPLETED,
+                        explanation="Temporary fixture state was removed.",
+                    )
+                )
+        elif request.value == "failure":
+            raise OperationFailedError(
+                code="stateforge.test.fixture_failure",
+                explanation="Fixture operation failed after partial work.",
+                effects=OperationEffects(
+                    side_effects=OperationSideEffects.PRESENT,
+                    cleanup=OperationCleanup.INCOMPLETE,
+                    explanation="Fixture work remains for inspection.",
+                ),
+            )
+        await context.report_progress("Finished", percentage=100)
+        return FixtureResult(value=request.value)
+
+    @operation("stateforge.test/lifecycle.uncancellable@1")
+    async def lifecycle_uncancellable(
+        self, request: FixtureInput, context: OperationContext
+    ) -> FixtureResult:
+        """Keep one operation active while cancellation is unsupported."""
+        self._record(f"operation:uncancellable:{context.operation_id}")
+        await self._wait_for_marker("uncancellable-release")
+        return FixtureResult(value=request.value)
+
+    async def _wait_for_marker(self, name: str) -> None:
+        """Wait for the installed verifier to release one execution."""
+        marker = self._state_directory / name
+        while not marker.exists():  # noqa: ASYNC110 - cross-process marker
+            await asyncio.sleep(0.05)
 
     @trigger("stateforge.test/runtime.started@1")
     async def runtime_started(self) -> AsyncIterator[FixtureTriggerPayload]:

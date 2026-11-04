@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -189,11 +190,21 @@ class OperationAdmissionCoordinator:
             )
         )
         fingerprint = validation.compute_request_fingerprint(invocation)
+        declaration = lease.operation_declarations[
+            request.operation_identifier
+        ]
+        result_schema_json = json.dumps(
+            dict(declaration.result_schema),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
         try:
             stored = await self._store.create_intent(
                 lease.provider_instance_id,
                 invocation,
                 fingerprint,
+                result_schema_json=result_schema_json,
             )
         except JournalError as error:
             raise OperationAdmissionCapacityError(

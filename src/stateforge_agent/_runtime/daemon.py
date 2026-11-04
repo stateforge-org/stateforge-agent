@@ -42,6 +42,9 @@ from stateforge_agent._sfp._runtime.discovery import (
 from stateforge_agent._sfp._services.operation_admission.coordinator import (
     OperationAdmissionCoordinator,
 )
+from stateforge_agent._sfp._services.operation_lifecycle.coordinator import (
+    OperationLifecycleCoordinator,
+)
 from stateforge_agent._sfp._services.trigger_publication.coordinator import (
     TriggerPublicationCoordinator,
 )
@@ -138,6 +141,7 @@ async def _run_agent(
                 configuration.providers.operation_admission_retry_initial_delay_seconds
             ),
         ),
+        operation_lifecycle=OperationLifecycleCoordinator(operation_store),
     )
 
     try:
