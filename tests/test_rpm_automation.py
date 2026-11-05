@@ -10,7 +10,7 @@ SHA_LENGTH = 40
 DEPENDENCY_COUNT = 2
 HEALTH_SCENARIO_PROVIDER_COUNT = 3
 MANIFEST_ASSERTION_COUNT = 6
-AVAILABILITY_ASSERTION_COUNT = 13
+AVAILABILITY_ASSERTION_COUNT = 14
 OPERATION_PROVIDER_COUNT = 2
 
 
@@ -458,6 +458,7 @@ def test_action_library_has_expected_domain_boundaries() -> None:
         "rpm/test-installed/lifecycle/multiple-providers",
         "rpm/test-installed/operations/admission",
         "rpm/test-installed/operations/lifecycle",
+        "rpm/test-installed/recovery",
         "rpm/test-installed/setup",
         "rpm/test-installed/smoke/manifest-exchange",
         "rpm/test-installed/triggers/publication",
@@ -505,7 +506,12 @@ def test_installed_test_always_collects_and_cleans_up() -> None:
 def test_each_installed_scenario_is_an_independent_action() -> None:
     """Keep scenario behavior outside shared environment orchestration."""
     scenario_root = ACTIONS / "rpm" / "test-installed"
-    scenarios = sorted(scenario_root.glob("*/*/action.yml"))
+    scenarios = sorted(
+        [
+            *scenario_root.glob("*/*/action.yml"),
+            *scenario_root.glob("recovery/action.yml"),
+        ]
+    )
 
     tiers = {
         scenario.relative_to(scenario_root).parts[0] for scenario in scenarios
@@ -519,12 +525,42 @@ def test_each_installed_scenario_is_an_independent_action() -> None:
         "capability",
         "destructive",
         "triggers",
+        "recovery",
     }
     for scenario in scenarios:
         content = read(scenario)
         assert "./.github/actions/rpm/test-installed/setup" in content
         assert "./.github/actions/rpm/test-installed/cleanup" in content
         assert "if: ${{ always() }}" in content
+
+
+def test_installed_recovery_composes_operation_and_trigger_replay() -> None:
+    """Exercise both durable recovery responsibilities in one system run."""
+    workflow = read(WORKFLOWS / "rpm-installed-test.yml")
+    scenario = read(
+        ACTIONS / "rpm" / "test-installed" / "recovery" / "action.yml"
+    )
+
+    assert "sfp-recovery" in workflow
+    assert "./.github/actions/rpm/test-installed/recovery" in workflow
+    assert 'drop-trigger-acks-until-restart: "true"' in scenario
+    assert "before-agent-restart" in scenario
+    assert "assert-operation-lifecycle" in scenario
+    assert "after-agent-restart" in scenario
+    assert "accepted_duplicate" in scenario
+    assert "content_fingerprint" in scenario
+    assert "assert-provider-restart.py" in scenario
+    assert "agent/assert-availability" in scenario
+
+    provider_restart = read(
+        ACTIONS
+        / "rpm"
+        / "test-installed"
+        / "recovery"
+        / "assert-provider-restart.py"
+    )
+    assert "provider_state_retained" in provider_restart
+    assert "no_redispatch" in provider_restart
 
 
 def test_installed_health_scenario_uses_real_artifacts_and_processes() -> None:

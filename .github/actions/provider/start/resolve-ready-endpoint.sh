@@ -18,8 +18,12 @@ if [[ ! "${PREVIOUS_GENERATION}" =~ ^[0-9]+$ ]]; then
     exit 2
 fi
 
-systemctl is-active --quiet "${UNIT_NAME}"
-[[ -f "${IDENTITY_PATH}" ]]
+if ! systemctl is-active --quiet "${UNIT_NAME}"; then
+    exit 1
+fi
+if [[ ! -f "${IDENTITY_PATH}" ]]; then
+    exit 1
+fi
 
 identity_before="$(cat -- "${IDENTITY_PATH}")"
 provider_instance_id="$(
@@ -34,10 +38,14 @@ identity_generation="$(
          | select(. == floor and . > $previous_generation)' \
         <<< "${identity_before}" 2>/dev/null
 )"
-[[ "${provider_instance_id}" =~ ${UUID_PATTERN} ]]
+if [[ ! "${provider_instance_id}" =~ ${UUID_PATTERN} ]]; then
+    exit 1
+fi
 
 descriptor_path="${DISCOVERY_DIRECTORY}/${provider_instance_id}.sfp.json"
-[[ -f "${descriptor_path}" ]]
+if [[ ! -f "${descriptor_path}" ]]; then
+    exit 1
+fi
 descriptor_before="$(cat -- "${descriptor_path}")"
 descriptor_provider_instance_id="$(
     jq -er '.provider_instance_id | strings' <<< "${descriptor_before}" \
@@ -56,18 +64,24 @@ socket_path="$(
         2>/dev/null
 )"
 
-[[ "${descriptor_provider_instance_id}" == "${provider_instance_id}" ]]
-[[ "${descriptor_generation}" == "${identity_generation}" ]]
-[[ "${transport_type}" == "unix" ]]
-[[ "${socket_path}" == \
-    "${DISCOVERY_DIRECTORY}/${provider_instance_id}.${identity_generation}.sock" ]]
-test -S "${socket_path}"
+if [[ "${descriptor_provider_instance_id}" != "${provider_instance_id}" \
+    || "${descriptor_generation}" != "${identity_generation}" \
+    || "${transport_type}" != "unix" \
+    || "${socket_path}" != \
+        "${DISCOVERY_DIRECTORY}/${provider_instance_id}.${identity_generation}.sock" \
+    || ! -S "${socket_path}" ]]; then
+    exit 1
+fi
 
 # Reject a mixed observation if either atomically published file changed while
 # its peer was being inspected.
-[[ "$(cat -- "${IDENTITY_PATH}")" == "${identity_before}" ]]
-[[ "$(cat -- "${descriptor_path}")" == "${descriptor_before}" ]]
-systemctl is-active --quiet "${UNIT_NAME}"
+if [[ "$(cat -- "${IDENTITY_PATH}")" != "${identity_before}" \
+    || "$(cat -- "${descriptor_path}")" != "${descriptor_before}" ]]; then
+    exit 1
+fi
+if ! systemctl is-active --quiet "${UNIT_NAME}"; then
+    exit 1
+fi
 
 printf '%s\t%s\t%s\n' \
     "${provider_instance_id}" "${identity_generation}" "${socket_path}"
