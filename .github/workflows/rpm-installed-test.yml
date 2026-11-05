@@ -109,6 +109,7 @@ jobs:
           - capability-limits
           - operation-admission
           - operation-lifecycle
+          - sfp-recovery
           - provider-availability
           - trigger-publication
           - trigger-storage-failure
@@ -165,6 +166,13 @@ jobs:
       - name: Run Operation Lifecycle scenario
         if: ${{ matrix.scenario == 'operation-lifecycle' }}
         uses: ./.github/actions/rpm/test-installed/operations/lifecycle
+        with:
+          evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
+          fixture-directory: dist/provider-fixture
+
+      - name: Run SFP recovery scenario
+        if: ${{ matrix.scenario == 'sfp-recovery' }}
+        uses: ./.github/actions/rpm/test-installed/recovery
         with:
           evidence-directory: dist/agent-system-test-evidence/${{ matrix.scenario }}
           fixture-directory: dist/provider-fixture

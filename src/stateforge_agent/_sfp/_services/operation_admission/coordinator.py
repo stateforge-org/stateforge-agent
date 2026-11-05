@@ -343,6 +343,11 @@ class OperationAdmissionCoordinator:
     ) -> None:
         if _deadline(attempt.invocation) > datetime.now(UTC):
             return
+        if attempt.attempt_count > 0:
+            raise OperationAdmissionUnresolvedError(
+                attempt.operation_id,
+                "OPERATION_DEADLINE_EXPIRED_WITHOUT_REMOTE_OUTCOME",
+            )
         rejection = OperationRejection(
             operation_id=attempt.operation_id,
             reason="ADMISSION_ERROR_REASON_OPERATION_DEADLINE_EXPIRED",

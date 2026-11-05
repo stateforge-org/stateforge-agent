@@ -723,6 +723,56 @@ async def test_expired_execution_deadline_never_contacts_provider(
 
 
 @pytest.mark.asyncio
+async def test_expired_deadline_after_transport_remains_indeterminate(
+    tmp_path: Path,
+) -> None:
+    client = _ScriptedClient([])
+    journal, coordinator, store = await _coordinator(
+        tmp_path / "agent.db", client
+    )
+    lease = _lease()
+    invocation = _wire_request().invocation
+    invocation.execution_deadline.FromDatetime(
+        datetime.now(UTC) - timedelta(seconds=1)
+    )
+    operation_id = UUID(invocation.operation_id)
+    fingerprint = validation.compute_request_fingerprint(invocation)
+    try:
+        await store.create_intent(
+            _PROVIDER_ID,
+            invocation,
+            fingerprint,
+            result_schema_json=b'{"type":"object"}',
+        )
+        await store.record_transport_attempt(
+            _PROVIDER_ID,
+            operation_id,
+            endpoint_generation=lease.endpoint_generation,
+            session_id=lease.session_id,
+        )
+
+        with pytest.raises(OperationAdmissionUnresolvedError) as captured:
+            await coordinator.submit(
+                lease,
+                operation_id,
+                _assessment(lease),
+                assert_current=_current,
+            )
+        persisted = await store.get(_PROVIDER_ID, operation_id)
+    finally:
+        await journal.close()
+
+    assert captured.value.reason == (
+        "OPERATION_DEADLINE_EXPIRED_WITHOUT_REMOTE_OUTCOME"
+    )
+    assert persisted is not None
+    assert persisted.state is OperationAttemptState.UNRESOLVED
+    assert persisted.rejection is None
+    assert persisted.attempt_count == 1
+    assert client.requests == []
+
+
+@pytest.mark.asyncio
 async def test_post_accept_storage_failure_leaves_identity_unresolved(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
