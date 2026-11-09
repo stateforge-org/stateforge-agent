@@ -65,14 +65,14 @@ _REQUEST_ID = UUID("6c1ae0b8-8d70-46dc-86c0-994247e1a39b")
 _ASSESSMENT_ID = UUID("1d40d0d5-ff2a-4780-bc3d-c4a7c55fc3a2")
 _MANIFEST_REVISION = "sha256:" + ("0" * 64)
 _GENERIC_OPERATION = "stateforge.test/configure@1"
-_PROFILE_OPERATION = "stateforge.test/snapshot@1"
+_BLOCKED_OPERATION = "stateforge.test/snapshot@1"
 _UNSUPPORTED_OPERATION = "stateforge.test/unsupported@1"
 _INDETERMINATE_OPERATION = "stateforge.test/inspect@1"
 _EXPECTED_RETRY_CALLS = 2
 _SENSITIVE_DETAILS = "credential-that-must-not-cross-the-boundary"
 _OPERATIONS = (
     _GENERIC_OPERATION,
-    _PROFILE_OPERATION,
+    _BLOCKED_OPERATION,
     _UNSUPPORTED_OPERATION,
     _INDETERMINATE_OPERATION,
 )
@@ -126,18 +126,18 @@ def _response(
                 )
             ],
         ),
-        _PROFILE_OPERATION: capability_assessment_pb2.CapabilityFinding(
-            operation_identifier=_PROFILE_OPERATION,
+        _BLOCKED_OPERATION: capability_assessment_pb2.CapabilityFinding(
+            operation_identifier=_BLOCKED_OPERATION,
             support_state=(
                 capability_assessment_pb2.SUPPORT_STATE_SUPPORTED_WITH_REQUIREMENTS
             ),
             requirement_findings=[
                 capability_assessment_pb2.RequirementFinding(
-                    requirement_id="runtime.profile.pending",
+                    requirement_id="runtime.prerequisite.pending",
                     state=(
                         capability_assessment_pb2.REQUIREMENT_STATE_UNSATISFIED
                     ),
-                    description="Profile prerequisite is pending",
+                    description="Runtime prerequisite is pending",
                     version_constraint=">=1",
                 )
             ],
@@ -549,10 +549,8 @@ def _manifest(
 ) -> ManifestDeclaration:
     document = {
         "operations": {
-            _GENERIC_OPERATION: {"implements": []},
-            _PROFILE_OPERATION: {
-                "implements": ["stateforge.profile.snapshot@1"]
-            },
+            _GENERIC_OPERATION: {},
+            _BLOCKED_OPERATION: {},
         }
     }
     return ManifestDeclaration(

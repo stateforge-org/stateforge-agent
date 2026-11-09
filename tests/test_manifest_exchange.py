@@ -35,7 +35,7 @@ _OTHER_PROVIDER_INSTANCE_ID = UUID("68d818de-3671-471d-a0ba-044cf60e2c8e")
 _SFP_VERSION = SfpVersion(major=1, minor=0)
 _SESSION_ID = "manifest-session-A"
 _GOLDEN_REVISION = (
-    "sha256:6bfdf3aedc2d4e45d77d4787cc0e744a488208b2510d81788291f51d24a623e8"
+    "sha256:aa27f0fddaa13df211bd3e4e4e4230cdda42d9188d4b480d196c2e0de2d20cdb"
 )
 _EXPECTED_RETRY_CALLS = 3
 
@@ -57,7 +57,6 @@ _MANIFEST = {
                 "properties": {},
                 "additionalProperties": False,
             },
-            "implements": [],
         }
     },
     "runtimeRequirements": {
@@ -192,6 +191,38 @@ def test_validates_the_protocol_conformance_revision() -> None:
     assert response.manifest_revision == _GOLDEN_REVISION
     assert declaration.key.revision == _GOLDEN_REVISION
     assert declaration.as_dict() == _MANIFEST
+
+
+def test_retains_concrete_operation_and_trigger_schemas() -> None:
+    manifest = deepcopy(_MANIFEST)
+    operation = manifest["operations"]["stateforge.git/reference.resolve@1"]
+    operation["inputSchema"]["properties"] = {
+        "vendor_request": {"type": "string"},
+        "extra_input": {"type": "integer"},
+    }
+    operation["resultSchema"]["properties"] = {
+        "vendor_result": {"type": "string"},
+        "extra_output": {"type": "boolean"},
+    }
+    payload_schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"event": {"type": "string"}},
+    }
+    manifest["triggers"] = {
+        "stateforge.git/reference.changed@1": {"payloadSchema": payload_schema}
+    }
+    declaration = ManifestDeclaration.validate(
+        _response(manifest=manifest), sfp_version=_SFP_VERSION
+    )
+    accepted = declaration.operation_declarations[
+        "stateforge.git/reference.resolve@1"
+    ]
+    assert dict(accepted.input_schema) == operation["inputSchema"]
+    assert dict(accepted.result_schema) == operation["resultSchema"]
+    assert declaration.trigger_schemas == {
+        "stateforge.git/reference.changed@1": payload_schema
+    }
 
 
 def test_installation_identity_contributes_to_revision() -> None:

@@ -69,7 +69,6 @@ from stateforge_agent._sfp._services.operation_admission.store import (
 _PROVIDER_ID = UUID("7f7db7d8-68b4-4f71-9769-065b5c4f941c")
 _MANIFEST_REVISION = "sha256:" + ("a" * 64)
 _OPERATION = "stateforge.test/restart@1"
-_PROFILE = "stateforge.test.profile.v1.safe_restart"
 _LOST_RESPONSE_CALL_COUNT = 2
 _OVERSIZED_RESPONSE_LENGTH = contract.MAX_RESPONSE_BYTES + 1
 _INPUT_SCHEMA = {
@@ -138,7 +137,6 @@ def _lease(*, generation: int = 1) -> OperationAdmissionLease:
             _OPERATION: ManifestOperationDeclaration(
                 input_schema=_INPUT_SCHEMA,
                 result_schema=_RESULT_SCHEMA,
-                implements=frozenset({_PROFILE}),
             )
         },
         channel=cast(grpc.aio.Channel, object()),
@@ -149,7 +147,6 @@ def _lease(*, generation: int = 1) -> OperationAdmissionLease:
 def _request(
     *,
     unit: str = "nginx.service",
-    roles: tuple[str, ...] = (_PROFILE,),
 ) -> OperationAdmissionRequest:
     return OperationAdmissionRequest(
         provider_instance_id=_PROVIDER_ID,
@@ -157,8 +154,17 @@ def _request(
         payload={"unit": unit},
         execution_deadline=datetime.now(UTC) + timedelta(minutes=5),
         execution_context={"requester": "test"},
-        required_implementation_roles=roles,
     )
+
+
+def test_removed_request_roles_are_rejected() -> None:
+    with pytest.raises(TypeError, match="required_implementation_roles"):
+        replace(_request(), required_implementation_roles=("obsolete",))
+
+
+def test_removed_declaration_claims_are_rejected() -> None:
+    with pytest.raises(TypeError, match="implements"):
+        replace(_lease().operation_declarations[_OPERATION], implements=())
 
 
 def _assessment(lease: OperationAdmissionLease) -> CapabilityAssessment:
@@ -205,7 +211,6 @@ def _wire_request() -> operation_admission_pb2.StartOperationRequest:
         ),
         contract=operation_admission_pb2.OperationContractContext(
             manifest_revision=_MANIFEST_REVISION,
-            required_implementation_roles=[_PROFILE],
         ),
     )
     ParseDict({"unit": "nginx.service"}, invocation.payload)
@@ -459,10 +464,10 @@ async def test_storage_failure_is_sanitized_before_provider_contact() -> None:
     "admission_request",
     [
         _request(unit=""),
-        _request(roles=("stateforge.test.profile.v1.undeclared",)),
+        _request(unit=7),
     ],
 )
-async def test_preflight_rejects_invalid_payload_or_profile(
+async def test_preflight_rejects_invalid_payload(
     tmp_path: Path,
     admission_request: OperationAdmissionRequest,
 ) -> None:
@@ -481,7 +486,6 @@ async def test_preflight_rejects_invalid_payload_or_profile(
                         },
                     },
                     result_schema=_RESULT_SCHEMA,
-                    implements=frozenset({_PROFILE}),
                 )
             },
         )

@@ -236,6 +236,19 @@ async def _run(  # noqa: C901, PLR0912, PLR0915 - scenario assertions
         if failed.cleanup != "CLEANUP_STATE_INCOMPLETE":
             raise AssertionError("Partial cleanup evidence was lost")
 
+        invalid_id = await _admit(manager, provider_id, "invalid-result")
+        seen_ids.append(invalid_id)
+        invalid = await _wait_status(
+            manager, provider_id, invalid_id, _TERMINAL
+        )
+        if (
+            invalid.state != "OPERATION_STATE_FAILED"
+            or invalid.failure_code != ("stateforge.operation.invalid_result")
+        ):
+            raise AssertionError(
+                "Invalid typed result was accepted as success"
+            )
+
         unsupported_id = await _admit(
             manager, provider_id, "unsupported", identifier=_UNCANCELLABLE
         )
@@ -284,6 +297,7 @@ async def _run(  # noqa: C901, PLR0912, PLR0915 - scenario assertions
         "typed_success_and_progress": True,
         "requested_then_confirmed_cancelled": True,
         "partial_failure_evidence": True,
+        "invalid_result_rejected": True,
         "unsupported_and_already_terminal": True,
         "no_redispatch": True,
     }

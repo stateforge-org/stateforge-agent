@@ -34,7 +34,6 @@ class ManifestOperationDeclaration:
 
     input_schema: Mapping[str, Any]
     result_schema: Mapping[str, Any]
-    implements: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,18 +90,13 @@ class ManifestDeclaration:
                 raise RuntimeError("Validated manifest cache entry is corrupt")
             input_schema = declaration.get("inputSchema")
             result_schema = declaration.get("resultSchema")
-            implements = declaration.get("implements")
-            if (
-                not isinstance(input_schema, dict)
-                or not isinstance(result_schema, dict)
-                or not isinstance(implements, list)
-                or any(not isinstance(item, str) for item in implements)
+            if not isinstance(input_schema, dict) or not isinstance(
+                result_schema, dict
             ):
                 raise RuntimeError("Validated manifest cache entry is corrupt")
             declarations[identifier] = ManifestOperationDeclaration(
                 input_schema=MappingProxyType(input_schema),
                 result_schema=MappingProxyType(result_schema),
-                implements=frozenset(implements),
             )
         return MappingProxyType(declarations)
 

@@ -655,7 +655,6 @@ def test_installed_capability_scenario_uses_real_artifacts_and_processes() -> (
     assert "target-sha256.txt" in assertion_action
     assert "@requirement_check" in fixture
     assert "@operation" in fixture
-    assert 'implements=("stateforge.backup.v1.prepare",)' in fixture
     assert "RequirementCheckResult.unsatisfied" in fixture
     assert "RequirementCheckResult.incompatible" in fixture
     assert "RequirementCheckResult.unknown" in fixture

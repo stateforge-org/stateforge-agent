@@ -282,10 +282,19 @@ async def test_watch_retains_typed_terminal_and_does_not_dispatch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("restart", [False, True])
 async def test_invalid_terminal_result_is_not_recorded(
     tmp_path: Path,
+    restart: bool,
 ) -> None:
-    journal, store, admitted = await _accepted(tmp_path / "agent.db")
+    path = tmp_path / "agent.db"
+    journal, store, admitted = await _accepted(path)
+    if restart:
+        await journal.close()
+        journal = SqliteJournal(path)
+        await journal.open()
+        store = journal.operation_admissions(maximum_unresolved_attempts=16)
+        await store.initialize()
     invalid = _snapshot(
         admitted,
         operation_lifecycle_pb2.OPERATION_STATE_SUCCEEDED,
