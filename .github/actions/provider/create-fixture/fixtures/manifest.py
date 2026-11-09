@@ -209,11 +209,10 @@ class ManifestFixtureProvider(Provider):
 
     @operation(
         "stateforge.test/snapshot@1",
-        implements=("stateforge.backup.v1.prepare",),
         requires=("runtime.target.readable", "runtime.pending"),
     )
     async def snapshot(self, request: FixtureInput) -> FixtureResult:
-        """Declare a profile-related operation with an unmet prerequisite."""
+        """Declare an operation with an unmet runtime prerequisite."""
         self._record("operation:snapshot")
         return FixtureResult(value=request.value)
 
@@ -256,6 +255,8 @@ class ManifestFixtureProvider(Provider):
                         explanation="Temporary fixture state was removed.",
                     )
                 )
+        elif request.value == "invalid-result":
+            return FixtureResult.model_construct(value=7)
         elif request.value == "failure":
             raise OperationFailedError(
                 code="stateforge.test.fixture_failure",

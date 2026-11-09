@@ -193,16 +193,6 @@ async def _require_local_rejections(
             execution_deadline=datetime.now(UTC) + timedelta(minutes=5),
             execution_context={"scenario": "installed-agent"},
         ),
-        OperationAdmissionRequest(
-            provider_instance_id=provider_instance_id,
-            operation_identifier=_OPERATION,
-            payload={"value": "rejected"},
-            execution_deadline=datetime.now(UTC) + timedelta(minutes=5),
-            execution_context={"scenario": "installed-agent"},
-            required_implementation_roles=(
-                "stateforge.test.profile.v1.not_declared",
-            ),
-        ),
     )
     for request in requests:
         try:

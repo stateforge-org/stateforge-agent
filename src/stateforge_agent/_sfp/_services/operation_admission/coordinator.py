@@ -432,9 +432,6 @@ def _invocation(
         execution_deadline=deadline,
         contract=operation_admission_pb2.OperationContractContext(
             manifest_revision=lease.manifest_revision,
-            required_implementation_roles=sorted(
-                request.required_implementation_roles
-            ),
         ),
         execution_context=execution_context,
     )
@@ -476,12 +473,6 @@ def _preflight(
         raise OperationAdmissionPreconditionError(
             "Operation payload does not match its declared schema"
         ) from error
-    if not set(request.required_implementation_roles).issubset(
-        declaration.implements
-    ):
-        raise OperationAdmissionPreconditionError(
-            "Operation requires an undeclared implementation profile"
-        )
     _validate_assessment(lease, invocation, assessment)
 
 
@@ -498,9 +489,7 @@ def _preflight_existing(
     declaration = lease.operation_declarations.get(
         invocation.operation_identifier
     )
-    if declaration is None or not set(
-        invocation.contract.required_implementation_roles
-    ).issubset(declaration.implements):
+    if declaration is None:
         raise OperationAdmissionPreconditionError(
             "Operation Admission declaration is no longer compatible"
         )

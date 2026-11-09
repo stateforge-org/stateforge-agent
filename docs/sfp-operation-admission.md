@@ -17,7 +17,7 @@ sequenceDiagram
     participant P as Provider
 
     C->>A: admit_operation(request)
-    A->>A: Check manifest, schema, profiles, and A3 evidence
+    A->>A: Check manifest, schema, and A3 evidence
     A->>J: Persist immutable intent and fingerprint
     J-->>A: Durable operation identity
     A->>P: StartOperation(ADMIT_OR_RESOLVE)
@@ -39,8 +39,7 @@ sequenceDiagram
 - the Provider installation identity;
 - the manifest-declared operation identifier;
 - the exact JSON payload and execution context;
-- a finite execution deadline; and
-- optional required implementation profiles.
+- a finite execution deadline.
 
 The Agent allocates the operation UUID, binds it to the immutable request
 fingerprint, and persists that intent before contacting the Provider. The
@@ -48,9 +47,8 @@ caller never supplies or reuses an arbitrary operation UUID.
 
 Admission requires the exact current Provider session to be available. The
 operation must be declared in the accepted manifest, its payload must satisfy
-the declared Draft 2020-12 schema, every requested implementation profile must
-be claimed by the operation, and the current Capability Assessment must cover
-the same operation and execution context with an admissible support state.
+the declared Draft 2020-12 schema, and the current Capability Assessment must
+cover the same operation and execution context with an admissible support state.
 
 ## Uncertain outcomes
 
@@ -111,3 +109,16 @@ The scenario proves that:
 - accepted and unresolved records survive an Agent service restart; and
 - journals and retained CI evidence contain identifiers and hashes, never
   sensitive operation payload values.
+
+## Profile ownership
+
+Providers declare concrete operation input/result schemas and trigger payload
+schemas. The Agent retains these declarations for execution validation and a
+future SF-AOP handoff to the Control Plane; that connection is not implemented.
+Profile definitions, automatic or assisted schema matching, field mappings,
+partial-match discovery, and Contract fulfillment belong in the Control Plane.
+Compatible types and constraints can support mappings even when field names
+differ. Extra outputs and optional or supplied extra inputs do not by themselves
+disqualify a capability; additional mandatory inputs must be supplied before
+execution. A JSON Schema `default` annotation does not materialize a value.
+Schema compatibility does not prove behavioral compliance.

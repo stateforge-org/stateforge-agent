@@ -1506,7 +1506,7 @@ requires-dist = [
     { name = "grpcio-health-checking", specifier = ">=1.83" },
     { name = "grpcio-status", specifier = ">=1.83" },
     { name = "jsonschema", specifier = ">=4.25,<5" },
-    { name = "stateforge-protocol", git = "https://github.com/stateforge-org/stateforge-protocol.git?rev=9504be252d9cd15ac53fe479bfb09a3007a16aca" },
+    { name = "stateforge-protocol", git = "https://github.com/stateforge-org/stateforge-protocol.git?rev=0dab0576d884ae10f3bef0135b641168234b18b6" },
     { name = "watchfiles", specifier = ">=1.2,<2" },
 ]
 
@@ -1534,7 +1534,7 @@ docs = [
 [[package]]
 name = "stateforge-protocol"
 version = "0.1.0"
-source = { git = "https://github.com/stateforge-org/stateforge-protocol.git?rev=9504be252d9cd15ac53fe479bfb09a3007a16aca#9504be252d9cd15ac53fe479bfb09a3007a16aca" }
+source = { git = "https://github.com/stateforge-org/stateforge-protocol.git?rev=0dab0576d884ae10f3bef0135b641168234b18b6#0dab0576d884ae10f3bef0135b641168234b18b6" }
 dependencies = [
     { name = "grpcio" },
     { name = "grpcio-health-checking" },

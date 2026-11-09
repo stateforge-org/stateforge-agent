@@ -35,7 +35,6 @@ class OperationAdmissionRequest:
     payload: Mapping[str, JsonValue]
     execution_deadline: datetime
     execution_context: Mapping[str, JsonValue]
-    required_implementation_roles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
